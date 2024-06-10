@@ -3,6 +3,9 @@ from threading import Thread
 
 
 MAX_NUM_UNACCEPTED_CONN = 10
+ARGS_IDX = 0
+CMD_IDX = 2
+PARAM_SLICE_IDX = slice(4, None)
 
 
 def process_request(client_socket, client_addr):
@@ -19,11 +22,20 @@ def process_request(client_socket, client_addr):
     """
     try:
         while True:
-            _data = client_socket.recv(1024)
-            if not _data:
+            data = client_socket.recv(1024)
+            if not data:
                 break
-            _data = _data.decode("utf-8")
-            client_socket.send(b"+PONG\r\n")
+            data = data.decode("utf-8")
+            cmd_list = [x.strip() for x in data.split("\n")]
+            if cmd_list[CMD_IDX] == "PING":
+                print("Processing PING..")
+                client_socket.send(b"+PONG\r\n")
+            elif cmd_list[CMD_IDX] == "ECHO":
+                print("Processing ECHO..")
+                client_socket.send(f"$3\r\n{''.join(cmd_list[PARAM_SLICE_IDX])}\r\n".encode("utf-8"))
+            else:
+                raise Exception("Unsupported Command")
+
     except socket.error as e:
         print(f"Socket error: {e}")
     finally:
