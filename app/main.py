@@ -4,8 +4,36 @@ from threading import Thread
 
 MAX_NUM_UNACCEPTED_CONN = 10
 ARGS_IDX = 0
+CMD_LEN_IDX = 1
 CMD_IDX = 2
-PARAM_SLICE_IDX = slice(4, None)
+PARAM_LEN_IDX = 3
+PARAM_IDX = 4
+
+
+class Parser:
+    @classmethod
+    def parse_command(cls, cmd_list):
+        _num_elements = int(cmd_list[ARGS_IDX][1:])
+        print("Received command list: ", cmd_list)
+        cmd = cmd_list[CMD_IDX].strip().upper()
+        cmd_len = int(cmd_list[CMD_LEN_IDX][1:])
+        assert (
+            len(cmd) == cmd_len
+        ), f"Expected argument of length {cmd_len} but received {len(cmd)}"
+        if cmd == "PING":
+            return b"+PONG\r\n"
+        elif cmd == "ECHO":
+            if len(cmd_list) > PARAM_IDX:
+                param_len = int(cmd_list[PARAM_LEN_IDX][1:])
+                param_content = cmd_list[PARAM_IDX]
+                assert (
+                    len(param_content) == param_len
+                ), f"Expected parameter of length {param_len} but received {len(param_content)}"
+                return f"${param_len}\r\n{param_content}\r\n".encode("utf-8")
+            else:
+                raise Exception("Invalid command format for ECHO")
+        else:
+            raise Exception(f"Command {cmd} not supported!")
 
 
 def process_request(client_socket, client_addr):
@@ -26,15 +54,9 @@ def process_request(client_socket, client_addr):
             if not data:
                 break
             data = data.decode("utf-8")
-            cmd_list = [x.strip() for x in data.split("\n")]
-            if cmd_list[CMD_IDX] == "PING":
-                print("Processing PING..")
-                client_socket.send(b"+PONG\r\n")
-            elif cmd_list[CMD_IDX] == "ECHO":
-                print("Processing ECHO..")
-                client_socket.send(f"$3\r\n{''.join(cmd_list[PARAM_SLICE_IDX])}\r\n".encode("utf-8"))
-            else:
-                raise Exception("Unsupported Command")
+            cmd_list = data.split("\r\n")
+            result = Parser.parse_command(cmd_list)
+            client_socket.send(result)
 
     except socket.error as e:
         print(f"Socket error: {e}")
