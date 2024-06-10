@@ -29,6 +29,7 @@ def process_request(client_socket, client_addr):
     finally:
         client_socket.close()
 
+
 def main():
     """
     The main function of the server. It creates a server socket, listens for incoming connections,
