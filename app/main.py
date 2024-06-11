@@ -1,20 +1,32 @@
 import socket
 from threading import Thread
+from typing import Tuple, Optional, List
+import time
 
 
+MAX_BYTES_TO_RECEIVE = 1024
 MAX_NUM_UNACCEPTED_CONN = 10
 ARGS_IDX = 0
 CMD_LEN_IDX = 1
 CMD_IDX = 2
 PARAM_LEN_IDX = 3
 PARAM_IDX = 4
+PARAM_ARG_LEN_IDX = 5
+PARAM_ARG_IDX = 6
+EXTRA_ARGS_CMD_LEN_IDX = 7
+EXTRA_ARGS_CMD_IDX = 8
+EXTRA_ARGS_CONTENT_LEN_IDX = 9
+EXTRA_ARGS_CONTENT_IDX = 10
+SECONDS_TO_MS = 1_000
 
 
 class Parser:
     db = {}
 
     @staticmethod
-    def _extract_content(cmd_list, content_len_idx, content_idx):
+    def _extract_content(
+        cmd_list, content_len_idx, content_idx
+    ) -> Tuple[Optional[int], Optional[str]]:
         if len(cmd_list) > content_idx:
             param_len = int(cmd_list[content_len_idx][1:])
             param_content = cmd_list[content_idx]
@@ -22,12 +34,26 @@ class Parser:
                 len(param_content) == param_len
             ), f"Expected parameter of length {param_len} but received {len(param_content)}"
             return param_len, param_content
-            return f"${param_len}\r\n{param_content}\r\n".encode("utf-8")
         else:
-            raise Exception("Invalid command format for ECHO")
+            print(
+                f"Arguments idx incorrect. Command list has {len(cmd_list)} elements but requested idx is {content_idx}"
+            )
+            return (None, None)
 
     @classmethod
-    def parse_command(cls, cmd_list):
+    def parse_command(cls, cmd_list: List[str]) -> bytes:
+        """
+        Parses the command list and dispatches the command to the appropriate handler.
+
+        Args:
+            cmd_list (list): The list of command arguments.
+
+        Returns:
+            bytes: The response from the command handler.
+
+        Raises:
+            Exception: If the command is not supported.
+        """
         _num_elements = int(cmd_list[ARGS_IDX][1:])
         print("Received command list: ", cmd_list)
         cmd = cmd_list[CMD_IDX].strip().upper()
@@ -35,37 +61,117 @@ class Parser:
         assert (
             len(cmd) == cmd_len
         ), f"Expected argument of length {cmd_len} but received {len(cmd)}"
-        if cmd == "PING":
-            return b"+PONG\r\n"
-        elif cmd == "ECHO":
-            param_len, param_content = cls._extract_content(
-                cmd_list, PARAM_LEN_IDX, PARAM_IDX
-            )
-            return f"${param_len}\r\n{param_content}\r\n".encode("utf-8")
-        elif cmd == "SET":
-            _key_len, key_content = cls._extract_content(
-                cmd_list, PARAM_LEN_IDX, PARAM_IDX
-            )
-            _val_len, val_content = cls._extract_content(
-                cmd_list, PARAM_LEN_IDX + 2, PARAM_IDX + 2
-            )
-            cls.db.update({key_content: val_content})
-            print("DB: ", cls.db)
-            return b"+OK\r\n"
-        elif cmd == "GET":
-            _key_len, key_content = cls._extract_content(
-                cmd_list, PARAM_LEN_IDX, PARAM_IDX
-            )
-            if key_content in cls.db:
-                value = cls.db[key_content]
-                return f"${len(value)}\r\n{value}\r\n".encode("utf-8")
-            else:
-                return b"$-1\r\n"
+
+        command_functions = {
+            "PING": cls._handle_ping,
+            "ECHO": cls._handle_echo,
+            "SET": cls._handle_set,
+            "GET": cls._handle_get,
+        }
+
+        if cmd in command_functions:
+            return command_functions[cmd](cmd_list)
         else:
             raise Exception(f"Command {cmd} not supported!")
 
+    @classmethod
+    def _handle_ping(cls, cmd_list: List[str]) -> bytes:
+        """
+        Handles the PING command.
 
-def process_request(client_socket, client_addr):
+        Args:
+            cmd_list (list): The list of command arguments.
+
+        Returns:
+            bytes: The response "+PONG\r\n".
+        """
+        return b"+PONG\r\n"
+
+    @classmethod
+    def _handle_echo(cls, cmd_list: List[str]) -> bytes:
+        """
+        Handles the ECHO command.
+
+        Args:
+            cmd_list (list): The list of command arguments.
+
+        Returns:
+            bytes: The response containing the echoed message.
+        """
+        param_len, param_content = cls._extract_content(
+            cmd_list, PARAM_LEN_IDX, PARAM_IDX
+        )
+        return f"${param_len}\r\n{param_content}\r\n".encode("utf-8")
+
+    @classmethod
+    def _handle_set(cls, cmd_list: List[str]) -> bytes:
+        """
+        Handles the SET command.
+
+        Args:
+            cmd_list (list): The list of command arguments.
+
+        Returns:
+            bytes: The response "+OK\r\n".
+        """
+        _key_len, key_content = cls._extract_content(cmd_list, PARAM_LEN_IDX, PARAM_IDX)
+        _val_len, val_content = cls._extract_content(
+            cmd_list, PARAM_ARG_LEN_IDX, PARAM_ARG_IDX
+        )
+        _extra_args_len, extra_args_content = cls._extract_content(
+            cmd_list, EXTRA_ARGS_CMD_LEN_IDX, EXTRA_ARGS_CMD_IDX
+        )
+        record = {}
+        if extra_args_content:
+            if extra_args_content.strip().upper() == "PX":
+                # Add TTL
+                _ttl_len, ttl_content = cls._extract_content(
+                    cmd_list, EXTRA_ARGS_CONTENT_LEN_IDX, EXTRA_ARGS_CONTENT_IDX
+                )
+                record.update(
+                    {
+                        "value": val_content,
+                        "TTL": (time.time() * SECONDS_TO_MS) + float(ttl_content),
+                    }
+                )
+            else:
+                raise Exception(
+                    f"Extra argument {extra_args_content} not supported for SET"
+                )
+        else:
+            record.update({"value": val_content})
+        cls.db.update({key_content: record})
+        print("DB: ", cls.db)
+        return b"+OK\r\n"
+
+    @classmethod
+    def _handle_get(cls, cmd_list: List[str]) -> bytes:
+        """
+        Handles the GET command.
+
+        Args:
+            cmd_list (list): The list of command arguments.
+
+        Returns:
+            bytes: The response containing the value associated with the key, or "$-1\r\n" if the key is not found.
+        """
+        _key_len, key_content = cls._extract_content(cmd_list, PARAM_LEN_IDX, PARAM_IDX)
+        value_struct = cls.db.get(key_content, None)
+        if value_struct is None:
+            return b"$-1\r\n"
+        elif (
+            "TTL" in value_struct and value_struct["TTL"] < time.time() * SECONDS_TO_MS
+        ):
+            return b"$-1\r\n"
+        else:
+            return (
+                f"${len(value_struct['value'])}\r\n{value_struct['value']}\r\n".encode(
+                    "utf-8"
+                )
+            )
+
+
+def process_request(client_socket, _client_addr):
     """
     Processes the request from a client. It continuously receives data from the client
     and sends a response until the client socket is closed.
@@ -79,7 +185,7 @@ def process_request(client_socket, client_addr):
     """
     try:
         while True:
-            data = client_socket.recv(1024)
+            data = client_socket.recv(MAX_BYTES_TO_RECEIVE)
             if not data:
                 break
             data = data.decode("utf-8")
