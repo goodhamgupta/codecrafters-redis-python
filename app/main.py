@@ -23,7 +23,10 @@ SECONDS_TO_MS = 1_000
 
 
 class Parser:
-    redis_db = {}
+    REDIS_DB = {}
+
+    REPLICATION_ID = "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb"
+    REPLICATION_OFFSET = 0
 
     @staticmethod
     def _extract_content(
@@ -142,8 +145,8 @@ class Parser:
                 )
         else:
             record.update({"value": val_content})
-        cls.redis_db.update({key_content: record})
-        print("redis_db: ", cls.redis_db)
+        cls.REDIS_DB.update({key_content: record})
+        print("redis_db: ", cls.REDIS_DB)
         return b"+OK\r\n"
 
     @classmethod
@@ -158,7 +161,7 @@ class Parser:
             bytes: The response containing the value associated with the key, or "$-1\r\n" if the key is not found.
         """
         _key_len, key_content = cls._extract_content(cmd_list, PARAM_LEN_IDX, PARAM_IDX)
-        value_struct = cls.redis_db.get(key_content, None)
+        value_struct = cls.REDIS_DB.get(key_content, None)
         if value_struct is None:
             return b"$-1\r\n"
         elif (
@@ -186,7 +189,9 @@ class Parser:
         if args.replicaof:
             return b"$10\r\nrole:slave\r\n"
         else:
-            return b"$11\r\nrole:master\r\n"
+            return f"$87\r\nrole:master\nmaster_replid:{cls.REPLICATION_ID}\nmaster_repl_offset:{cls.REPLICATION_OFFSET}\r\n".encode(
+                "utf-8"
+            )
 
 
 def process_request(client_socket, _client_addr, args):
