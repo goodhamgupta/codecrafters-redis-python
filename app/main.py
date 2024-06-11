@@ -2,6 +2,7 @@ import socket
 from threading import Thread
 from typing import Tuple, Optional, List
 import time
+import argparse
 
 
 MAX_BYTES_TO_RECEIVE = 1024
@@ -210,7 +211,12 @@ def main():
     Returns:
         None
     """
-    server_socket = socket.create_server(("localhost", 6379), reuse_port=True)
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-p", "--port", help="Redis server port", default=6379, type=int)
+    args = parser.parse_args()
+    server_socket = socket.create_server(("localhost", args.port), reuse_port=True)
+    print(f"Listening on port {args.port}..")
     server_socket.listen(MAX_NUM_UNACCEPTED_CONN)
     while True:
         (client_socket, _client_add) = server_socket.accept()
