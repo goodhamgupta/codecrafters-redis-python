@@ -183,7 +183,7 @@ class Parser:
         Returns:
             bytes: The response containing the role of the server.
         """
-        if args.replica_of:
+        if args.replicaof:
             return b"$10\r\nrole:slave\r\n"
         else:
             return b"$11\r\nrole:master\r\n"
@@ -235,7 +235,7 @@ def main():
     )
     parser.add_argument(
         "-r",
-        "--replica-of",
+        "--replicaof",
         help="Address of Redis master server. Current server will be the replica of the master",
         default=None,
     )
