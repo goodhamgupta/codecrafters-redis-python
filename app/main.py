@@ -68,6 +68,7 @@ class Parser:
             "ECHO": cls._handle_echo,
             "SET": cls._handle_set,
             "GET": cls._handle_get,
+            "INFO": cls._handle_info,
         }
 
         if cmd in command_functions:
@@ -171,6 +172,19 @@ class Parser:
                 )
             )
 
+    @classmethod
+    def _handle_info(cls, cmd_list: List[str]) -> bytes:
+        """
+        Handles the INFO command.
+
+        Args:
+            cmd_list (list): The list of command arguments.
+
+        Returns:
+            bytes: The response containing the role of the server.
+        """
+        return b"$11\r\nrole:master\r\n"
+
 
 def process_request(client_socket, _client_addr):
     """
@@ -213,7 +227,9 @@ def main():
     """
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("-p", "--port", help="Redis server port", default=6379, type=int)
+    parser.add_argument(
+        "-p", "--port", help="Redis server port", default=6379, type=int
+    )
     args = parser.parse_args()
     server_socket = socket.create_server(("localhost", args.port), reuse_port=True)
     print(f"Listening on port {args.port}..")
