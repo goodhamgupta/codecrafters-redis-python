@@ -80,8 +80,8 @@ class Parser:
         else:
             raise Exception(f"Command {cmd} not supported!")
 
-    @classmethod
-    def _handle_ping(cls, _cmd_list: List[str], _args) -> bytes:
+    @staticmethod
+    def _handle_ping(_cmd_list: List[str], _args) -> bytes:
         """
         Handles the PING command.
 
@@ -237,65 +237,102 @@ def process_request(client_socket, _client_addr, args):
         client_socket.close()
 
 
-def replication_handshake(args):
+class ReplicationHandshake:
     """
-    Connects to the master server if the current server is a replica.
-    Sends a PING command to the master server and prints the response.
-    If the current server is not a replica, it prints a message indicating that no replication is needed.
-
-    Args:
-        args (Namespace): The command line arguments parsed by argparse.
-
-    Returns:
-        None
+    Class to handle the replication handshake process.
     """
-    if args.replicaof:
-        (master_ip, master_port) = args.replicaof.split(" ")
+
+    def __init__(self, args: Namespace) -> None:
+        """
+        Initialize the ReplicationHandshake class.
+
+        Args:
+            args (Namespace): The command line arguments parsed by argparse.
+        """
+        self.args = args
+
+    def connect_to_master(self, master_ip: str, master_port: str) -> socket.socket:
+        """
+        Connect to the master server.
+
+        Args:
+            master_ip (str): The IP address of the master server.
+            master_port (str): The port number of the master server.
+
+        Returns:
+            socket.socket: The socket object connected to the master server.
+        """
         master_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        try:
-            master_socket.connect((master_ip, int(master_port)))
-            master_socket.send(b"*1\r\n$4\r\nPING\r\n")
-            first_handshake_response = master_socket.recv(MAX_BYTES_TO_RECEIVE).decode(
-                "utf-8"
-            )
-            print(f"Received response from master: {first_handshake_response}")
-            if "PONG" in first_handshake_response:
-                # Master is alive. Continue the handshake process
-                master_socket.send(
-                    b"*3\r\n$8\r\nREPLCONF\r\n$14\r\nlistening-port\r\n$4\r\n6380\r\n"
-                )
-                second_handshake_response = master_socket.recv(
-                    MAX_BYTES_TO_RECEIVE
-                ).decode("utf-8")
-                if "OK" in second_handshake_response:
-                    # Master responded to REPLCONF command. Continue with handshake
-                    master_socket.send(
-                        b"*3\r\n$8\r\nREPLCONF\r\n$4\r\ncapa\r\n$6\r\npsync2\r\n"
+        master_socket.connect((master_ip, int(master_port)))
+        return master_socket
+
+    def send_ping(self, master_socket: socket.socket) -> str:
+        """
+        Send a PING command to the master server.
+
+        Args:
+            master_socket (socket.socket): The socket object connected to the master server.
+
+        Returns:
+            str: The response from the master server.
+        """
+        master_socket.send(b"*1\r\n$4\r\nPING\r\n")
+        return master_socket.recv(MAX_BYTES_TO_RECEIVE).decode("utf-8")
+
+    def send_replconf(self, master_socket: socket.socket, message: bytes) -> str:
+        """
+        Send a REPLCONF command to the master server.
+
+        Args:
+            master_socket (socket.socket): The socket object connected to the master server.
+            message (bytes): The REPLCONF command to be sent.
+
+        Returns:
+            str: The response from the master server.
+        """
+        master_socket.send(message)
+        return master_socket.recv(MAX_BYTES_TO_RECEIVE).decode("utf-8")
+
+    def perform_handshake(self) -> None:
+        """
+        Perform the replication handshake process.
+        """
+        if self.args.replicaof:
+            (master_ip, master_port) = self.args.replicaof.split(" ")
+            try:
+                master_socket = self.connect_to_master(master_ip, master_port)
+                first_handshake_response = self.send_ping(master_socket)
+                print(f"Received response from master: {first_handshake_response}")
+                if "PONG" in first_handshake_response:
+                    second_handshake_response = self.send_replconf(
+                        master_socket,
+                        b"*3\r\n$8\r\nREPLCONF\r\n$14\r\nlistening-port\r\n$4\r\n6380\r\n",
                     )
-                    final_handshake_response = master_socket.recv(
-                        MAX_BYTES_TO_RECEIVE
-                    ).decode("utf-8")
-                    if "OK" in final_handshake_response:
-                        print("Handshake process complete!")
+                    if "OK" in second_handshake_response:
+                        final_handshake_response = self.send_replconf(
+                            master_socket,
+                            b"*3\r\n$8\r\nREPLCONF\r\n$4\r\ncapa\r\n$6\r\npsync2\r\n",
+                        )
+                        if "OK" in final_handshake_response:
+                            print("Handshake process complete!")
+                        else:
+                            raise Exception(
+                                f"Master server did to respond to REPLCONF capabilities. Response received: {final_handshake_response}"
+                            )
                     else:
                         raise Exception(
-                            f"Master server did to respond to REPLCONF capabilities. Response received: {final_handshake_response}"
+                            f"Master server did to respond to REPLCONF. Response received: {second_handshake_response}"
                         )
                 else:
                     raise Exception(
-                        f"Master server did to respond to REPLCONF. Response received: {second_handshake_response}"
+                        f"Master server did to respond to PING. Response received: {first_handshake_response}"
                     )
-            else:
-                # Master is dead. Abort!
-                raise Exception(
-                    f"Master server did to respond to PING. Response received: {first_handshake_response}"
-                )
-        except socket.error as e:
-            print(f"Failed to connect to master: {e}")
-        finally:
-            master_socket.close()
-    else:
-        print("Current server is master. No replication needed..")
+            except socket.error as e:
+                print(f"Failed to connect to master: {e}")
+            finally:
+                master_socket.close()
+        else:
+            print("Current server is master. No replication needed..")
 
 
 def main():
@@ -324,7 +361,7 @@ def main():
     server_socket = socket.create_server(("localhost", args.port), reuse_port=True)
     print(f"Listening on port {args.port}..")
     server_socket.listen(MAX_NUM_UNACCEPTED_CONN)
-    Thread(target=replication_handshake, args=(args,)).start()
+    Thread(target=ReplicationHandshake(args).perform_handshake).start()
     while True:
         (client_socket, _client_add) = server_socket.accept()
         Thread(target=process_request, args=(client_socket, _client_add, args)).start()
