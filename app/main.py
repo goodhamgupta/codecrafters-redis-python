@@ -3,6 +3,7 @@ from threading import Thread
 from typing import Tuple, Optional, List
 import time
 import argparse
+from argparse import Namespace
 
 
 MAX_BYTES_TO_RECEIVE = 1024
@@ -22,7 +23,7 @@ SECONDS_TO_MS = 1_000
 
 
 class Parser:
-    db = {}
+    redis_db = {}
 
     @staticmethod
     def _extract_content(
@@ -42,7 +43,7 @@ class Parser:
             return (None, None)
 
     @classmethod
-    def parse_command(cls, cmd_list: List[str]) -> bytes:
+    def parse_command(cls, cmd_list: List[str], args) -> bytes:
         """
         Parses the command list and dispatches the command to the appropriate handler.
 
@@ -70,14 +71,13 @@ class Parser:
             "GET": cls._handle_get,
             "INFO": cls._handle_info,
         }
-
         if cmd in command_functions:
-            return command_functions[cmd](cmd_list)
+            return command_functions[cmd](cmd_list, args)
         else:
             raise Exception(f"Command {cmd} not supported!")
 
     @classmethod
-    def _handle_ping(cls, cmd_list: List[str]) -> bytes:
+    def _handle_ping(cls, _cmd_list: List[str], _args) -> bytes:
         """
         Handles the PING command.
 
@@ -90,7 +90,7 @@ class Parser:
         return b"+PONG\r\n"
 
     @classmethod
-    def _handle_echo(cls, cmd_list: List[str]) -> bytes:
+    def _handle_echo(cls, cmd_list: List[str], _args) -> bytes:
         """
         Handles the ECHO command.
 
@@ -106,7 +106,7 @@ class Parser:
         return f"${param_len}\r\n{param_content}\r\n".encode("utf-8")
 
     @classmethod
-    def _handle_set(cls, cmd_list: List[str]) -> bytes:
+    def _handle_set(cls, cmd_list: List[str], _args) -> bytes:
         """
         Handles the SET command.
 
@@ -142,12 +142,12 @@ class Parser:
                 )
         else:
             record.update({"value": val_content})
-        cls.db.update({key_content: record})
-        print("DB: ", cls.db)
+        cls.redis_db.update({key_content: record})
+        print("redis_db: ", cls.redis_db)
         return b"+OK\r\n"
 
     @classmethod
-    def _handle_get(cls, cmd_list: List[str]) -> bytes:
+    def _handle_get(cls, cmd_list: List[str], _args) -> bytes:
         """
         Handles the GET command.
 
@@ -158,7 +158,7 @@ class Parser:
             bytes: The response containing the value associated with the key, or "$-1\r\n" if the key is not found.
         """
         _key_len, key_content = cls._extract_content(cmd_list, PARAM_LEN_IDX, PARAM_IDX)
-        value_struct = cls.db.get(key_content, None)
+        value_struct = cls.redis_db.get(key_content, None)
         if value_struct is None:
             return b"$-1\r\n"
         elif (
@@ -173,7 +173,7 @@ class Parser:
             )
 
     @classmethod
-    def _handle_info(cls, cmd_list: List[str]) -> bytes:
+    def _handle_info(cls, _cmd_list: List[str], args: Namespace) -> bytes:
         """
         Handles the INFO command.
 
@@ -183,10 +183,13 @@ class Parser:
         Returns:
             bytes: The response containing the role of the server.
         """
-        return b"$11\r\nrole:master\r\n"
+        if args.replica_of:
+            return b"$10\r\nrole:slave\r\n"
+        else:
+            return b"$11\r\nrole:master\r\n"
 
 
-def process_request(client_socket, _client_addr):
+def process_request(client_socket, _client_addr, args):
     """
     Processes the request from a client. It continuously receives data from the client
     and sends a response until the client socket is closed.
@@ -205,7 +208,7 @@ def process_request(client_socket, _client_addr):
                 break
             data = data.decode("utf-8")
             cmd_list = data.split("\r\n")
-            result = Parser.parse_command(cmd_list)
+            result = Parser.parse_command(cmd_list, args)
             client_socket.send(result)
 
     except socket.error as e:
@@ -230,13 +233,19 @@ def main():
     parser.add_argument(
         "-p", "--port", help="Redis server port", default=6379, type=int
     )
+    parser.add_argument(
+        "-r",
+        "--replica-of",
+        help="Address of Redis master server. Current server will be the replica of the master",
+        default=None,
+    )
     args = parser.parse_args()
     server_socket = socket.create_server(("localhost", args.port), reuse_port=True)
     print(f"Listening on port {args.port}..")
     server_socket.listen(MAX_NUM_UNACCEPTED_CONN)
     while True:
         (client_socket, _client_add) = server_socket.accept()
-        Thread(target=process_request, args=(client_socket, _client_add)).start()
+        Thread(target=process_request, args=(client_socket, _client_add, args)).start()
 
 
 if __name__ == "__main__":
