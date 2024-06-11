@@ -74,6 +74,7 @@ class Parser:
             "GET": cls._handle_get,
             "INFO": cls._handle_info,
             "REPLCONF": cls._handle_replconf,
+            "PSYNC": cls._handle_psync,
         }
         if cmd in command_functions:
             return command_functions[cmd](cmd_list, args)
@@ -194,8 +195,8 @@ class Parser:
                 "utf-8"
             )
 
-    @classmethod
-    def _handle_replconf(cls, _cmd_list: List[str], _args: Namespace) -> bytes:
+    @staticmethod
+    def _handle_replconf(_cmd_list: List[str], _args: Namespace) -> bytes:
         """
         Handles the REPLCONF command.
 
@@ -207,6 +208,10 @@ class Parser:
             bytes: The response indicating the REPLCONF command was handled successfully.
         """
         return b"+OK\r\n"
+
+    @staticmethod
+    def _handle_psync(_cmd_list: List[str], _args: Namespace) -> bytes:
+        return b"+FULLRESYNC <REPL_ID> 0\r\n"
 
 
 def process_request(client_socket, _client_addr, args):
@@ -266,20 +271,7 @@ class ReplicationHandshake:
         master_socket.connect((master_ip, int(master_port)))
         return master_socket
 
-    def send_ping(self, master_socket: socket.socket) -> str:
-        """
-        Send a PING command to the master server.
-
-        Args:
-            master_socket (socket.socket): The socket object connected to the master server.
-
-        Returns:
-            str: The response from the master server.
-        """
-        master_socket.send(b"*1\r\n$4\r\nPING\r\n")
-        return master_socket.recv(MAX_BYTES_TO_RECEIVE).decode("utf-8")
-
-    def send_replconf(self, master_socket: socket.socket, message: bytes) -> str:
+    def send_message(self, master_socket: socket.socket, message: bytes) -> str:
         """
         Send a REPLCONF command to the master server.
 
@@ -299,40 +291,101 @@ class ReplicationHandshake:
         """
         if self.args.replicaof:
             (master_ip, master_port) = self.args.replicaof.split(" ")
-            try:
-                master_socket = self.connect_to_master(master_ip, master_port)
-                first_handshake_response = self.send_ping(master_socket)
-                print(f"Received response from master: {first_handshake_response}")
-                if "PONG" in first_handshake_response:
-                    second_handshake_response = self.send_replconf(
-                        master_socket,
-                        b"*3\r\n$8\r\nREPLCONF\r\n$14\r\nlistening-port\r\n$4\r\n6380\r\n",
-                    )
-                    if "OK" in second_handshake_response:
-                        final_handshake_response = self.send_replconf(
-                            master_socket,
-                            b"*3\r\n$8\r\nREPLCONF\r\n$4\r\ncapa\r\n$6\r\npsync2\r\n",
-                        )
-                        if "OK" in final_handshake_response:
-                            print("Handshake process complete!")
-                        else:
-                            raise Exception(
-                                f"Master server did to respond to REPLCONF capabilities. Response received: {final_handshake_response}"
-                            )
-                    else:
-                        raise Exception(
-                            f"Master server did to respond to REPLCONF. Response received: {second_handshake_response}"
-                        )
-                else:
-                    raise Exception(
-                        f"Master server did to respond to PING. Response received: {first_handshake_response}"
-                    )
-            except socket.error as e:
-                print(f"Failed to connect to master: {e}")
-            finally:
-                master_socket.close()
+            master_socket = self.connect_and_ping_master(master_ip, master_port)
+            self.perform_replconf_handshake(master_socket)
+            self.perform_psync_handshake(master_socket)
         else:
             print("Current server is master. No replication needed..")
+
+    def connect_and_ping_master(
+        self, master_ip: str, master_port: str
+    ) -> socket.socket:
+        """
+        Connect to the master server and send a PING command.
+
+        Args:
+            master_ip (str): The IP address of the master server.
+            master_port (str): The port number of the master server.
+
+        Returns:
+            socket.socket: The socket object connected to the master server.
+        """
+        try:
+            master_socket = self.connect_to_master(master_ip, master_port)
+            first_handshake_response = self.send_message(
+                master_socket, b"*1\r\n$4\r\nPING\r\n"
+            )
+            print(f"Received response from master: {first_handshake_response}")
+            if "PONG" not in first_handshake_response:
+                raise Exception(
+                    f"Master server did not respond to PING. Response received: {first_handshake_response}"
+                )
+        except socket.error as e:
+            print(f"Failed to connect to master: {e}")
+            master_socket.close()
+            raise
+        return master_socket
+
+    def perform_replconf_handshake(self, master_socket: socket.socket) -> None:
+        """
+        Perform the REPLCONF handshake process.
+
+        Args:
+            master_socket (socket.socket): The socket object connected to the master server.
+        """
+        try:
+            second_handshake_response = self.send_message(
+                master_socket,
+                b"*3\r\n$8\r\nREPLCONF\r\n$14\r\nlistening-port\r\n$4\r\n6380\r\n",
+            )
+            if "OK" not in second_handshake_response:
+                raise Exception(
+                    f"Master server did not respond to REPLCONF. Response received: {second_handshake_response}"
+                )
+            final_handshake_response = self.send_message(
+                master_socket,
+                b"*3\r\n$8\r\nREPLCONF\r\n$4\r\ncapa\r\n$6\r\npsync2\r\n",
+            )
+            if "OK" not in final_handshake_response:
+                raise Exception(
+                    f"Master server did not respond to REPLCONF capabilities. Response received: {final_handshake_response}"
+                )
+            print("Handshake process complete!")
+        except socket.error as e:
+            print(f"Failed to connect to master: {e}")
+            master_socket.close()
+            raise
+
+    def perform_psync_handshake(self, master_socket: socket.socket) -> None:
+        """
+        Perform the PSYNC handshake process.
+
+        This method sends a PSYNC message to the master server and expects a FULLRESYNC response.
+        If the response is not FULLRESYNC, an exception is raised.
+
+        Args:
+            master_socket (socket.socket): The socket object connected to the master server.
+
+        Raises:
+            Exception: If the response from the master server is not FULLRESYNC.
+
+        Returns:
+            None
+        """
+        try:
+            psync_response = self.send_message(
+                master_socket, b"*3\r\n$5\r\nPSYNC\r\n$1\r\n?\r\n$2\r\n-1\r\n"
+            )
+            if "FULLRESYNC" in psync_response:
+                print(
+                    "Received FULLRESYNC from master. Replication handshake complete."
+                )
+            else:
+                raise Exception(
+                    f"Excepted FULLRESYNC from master. Received: {psync_response}"
+                )
+        except Exception as e:
+            print(f"Failed to connect to master: {e}")
 
 
 def main():
