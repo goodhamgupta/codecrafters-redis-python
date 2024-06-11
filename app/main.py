@@ -222,6 +222,34 @@ def process_request(client_socket, _client_addr, args):
         client_socket.close()
 
 
+def connect_to_master(args):
+    """
+    Connects to the master server if the current server is a replica.
+    Sends a PING command to the master server and prints the response.
+    If the current server is not a replica, it prints a message indicating that no replication is needed.
+
+    Args:
+        args (Namespace): The command line arguments parsed by argparse.
+
+    Returns:
+        None
+    """
+    if args.replicaof:
+        (master_ip, master_port) = args.replicaof.split(" ")
+        master_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            master_socket.connect((master_ip, int(master_port)))
+            master_socket.send(b"*1\r\n$4\r\nPING\r\n")
+            response = master_socket.recv(MAX_BYTES_TO_RECEIVE)
+            print(f"Received response from master: {response.decode('utf-8')}")
+        except socket.error as e:
+            print(f"Failed to connect to master: {e}")
+        finally:
+            master_socket.close()
+    else:
+        print("Current server is master. No replication needed..")
+
+
 def main():
     """
     The main function of the server. It creates a server socket, listens for incoming connections,
@@ -248,6 +276,7 @@ def main():
     server_socket = socket.create_server(("localhost", args.port), reuse_port=True)
     print(f"Listening on port {args.port}..")
     server_socket.listen(MAX_NUM_UNACCEPTED_CONN)
+    Thread(target=connect_to_master, args=(args,)).start()
     while True:
         (client_socket, _client_add) = server_socket.accept()
         Thread(target=process_request, args=(client_socket, _client_add, args)).start()
