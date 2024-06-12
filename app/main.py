@@ -30,7 +30,7 @@ class Parser:
 
     RDB_HEX_DUMP = "524544495330303131fa0972656469732d76657205372e322e30fa0a72656469732d62697473c040fa056374696d65c26d08bc65fa08757365642d6d656dc2b0c41000fa08616f662d62617365c000fff06e3bfec0ff5aa2"
 
-    REPLICA_SOCKET = None
+    REPLICA_SOCKETS = []
 
     def __init__(
         self, client_socket: socket.socket, cmd_list: List[str], args: Namespace
@@ -100,8 +100,8 @@ class Parser:
                 # Hence, we duplicate the current socket to the replica_socket so that we can send WRITE messages
                 # to the replica
                 print("Setting replica socket..")
-                Parser.REPLICA_SOCKET = self.client_socket.dup()
-                print("Replica socket: ", Parser.REPLICA_SOCKET)
+                Parser.REPLICA_SOCKETS.append(self.client_socket.dup())
+                print("List of replica sockets: ", Parser.REPLICA_SOCKETS)
                 print("Replica socket set!")
                 # Hack: PSYNC needs to send multiple messages.
                 for msg in result:
@@ -173,11 +173,12 @@ class Parser:
             record.update({"value": val_content})
         self.REDIS_DB.update({key_content: record})
         print("redis_db: ", self.REDIS_DB)
-        if Parser.REPLICA_SOCKET:
-            print("Sending command to replica...")
-            replica_command = "\r\n".join(self.cmd_list)
-            Parser.REPLICA_SOCKET.send(replica_command.encode("utf-8"))
-            print("Message sent to replica!")
+        if len(Parser.REPLICA_SOCKETS) > 0:
+            for candidate_replica_socket in Parser.REPLICA_SOCKETS:
+                print(f"Sending command to replica: {candidate_replica_socket}...")
+                replica_command = "\r\n".join(self.cmd_list)
+                candidate_replica_socket.send(replica_command.encode("utf-8"))
+                print("Message sent to replica!")
         else:
             print("No replica detected.")
         return b"+OK\r\n"
