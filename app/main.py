@@ -209,9 +209,19 @@ class Parser:
         """
         return b"+OK\r\n"
 
-    @staticmethod
-    def _handle_psync(_cmd_list: List[str], _args: Namespace) -> bytes:
-        return b"+FULLRESYNC <REPL_ID> 0\r\n"
+    @classmethod
+    def _handle_psync(cls, _cmd_list: List[str], _args: Namespace) -> bytes:
+        """
+        Handles the PSYNC command.
+
+        Args:
+            _cmd_list (list): The list of command arguments.
+            _args (Namespace): The command line arguments parsed by argparse.
+
+        Returns:
+            bytes: The response indicating the PSYNC command was handled successfully.
+        """
+        return f"+FULLRESYNC {cls.REPLICATION_ID} {cls.REPLICATION_OFFSET}\r\n".encode("utf-8")
 
 
 def process_request(client_socket, _client_addr, args):
