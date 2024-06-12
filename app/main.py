@@ -139,20 +139,20 @@ class Parser:
             bytes: The response "+OK\r\n".
         """
         _key_len, key_content = self._extract_content(
-            self.cmd_list, PARAM_LEN_IDX, PARAM_IDX
+            PARAM_LEN_IDX, PARAM_IDX
         )
         _val_len, val_content = self._extract_content(
-            self.cmd_list, PARAM_ARG_LEN_IDX, PARAM_ARG_IDX
+            PARAM_ARG_LEN_IDX, PARAM_ARG_IDX
         )
         _extra_args_len, extra_args_content = self._extract_content(
-            self.cmd_list, EXTRA_ARGS_CMD_LEN_IDX, EXTRA_ARGS_CMD_IDX
+            EXTRA_ARGS_CMD_LEN_IDX, EXTRA_ARGS_CMD_IDX
         )
         record = {}
         if extra_args_content:
             if extra_args_content.strip().upper() == "PX":
                 # Add TTL
                 _ttl_len, ttl_content = self._extract_content(
-                    self.cmd_list, EXTRA_ARGS_CONTENT_LEN_IDX, EXTRA_ARGS_CONTENT_IDX
+                    EXTRA_ARGS_CONTENT_LEN_IDX, EXTRA_ARGS_CONTENT_IDX
                 )
                 record.update(
                     {
@@ -181,7 +181,7 @@ class Parser:
             bytes: The response containing the value associated with the key, or "$-1\r\n" if the key is not found.
         """
         _key_len, key_content = self._extract_content(
-            self.cmd_list, PARAM_LEN_IDX, PARAM_IDX
+            PARAM_LEN_IDX, PARAM_IDX
         )
         value_struct = self.REDIS_DB.get(key_content, None)
         if value_struct is None:
