@@ -174,7 +174,7 @@ class Parser:
         self.REDIS_DB.update({key_content: record})
         print("redis_db: ", self.REDIS_DB)
         print("Sending command to replica...")
-        replica_command = "".join(self.cmd_list) + "\r\n"
+        replica_command = "\r\n".join(self.cmd_list)
         Parser.REPLICA_SOCKET.send(replica_command.encode("utf-8"))
         print("Message sent to replica!")
         return b"+OK\r\n"
