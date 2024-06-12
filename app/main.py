@@ -181,7 +181,11 @@ class Parser:
                 print("Message sent to replica!")
         else:
             print("No replica detected.")
-        return b"+OK\r\n"
+        if self.args.replicaof:
+            print("Command received on replica. WON'T SEND A RESPONSE")
+            return None
+        else:
+            return b"+OK\r\n"
 
     def _handle_get(self) -> bytes:
         """
