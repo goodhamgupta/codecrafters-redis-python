@@ -28,25 +28,40 @@ class Parser:
     REPLICATION_ID = "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb"
     REPLICATION_OFFSET = 0
 
-    @staticmethod
+    RDB_HEX_DUMP = "524544495330303131fa0972656469732d76657205372e322e30fa0a72656469732d62697473c040fa056374696d65c26d08bc65fa08757365642d6d656dc2b0c41000fa08616f662d62617365c000fff06e3bfec0ff5aa2"
+
+    def __init__(
+        self, client_socket: socket.socket, cmd_list: List[str], args: Namespace
+    ):
+        """
+        Initializes the Parser instance.
+
+        Args:
+            client_socket (socket.socket): The socket object for the client connection.
+            cmd_list (List[str]): The list of command arguments received from the client.
+            args (Namespace): Additional arguments for the parser.
+        """
+        self.client_socket = client_socket
+        self.cmd_list = cmd_list
+        self.args = args
+
     def _extract_content(
-        cmd_list, content_len_idx, content_idx
+        self, content_len_idx, content_idx
     ) -> Tuple[Optional[int], Optional[str]]:
-        if len(cmd_list) > content_idx:
-            param_len = int(cmd_list[content_len_idx][1:])
-            param_content = cmd_list[content_idx]
+        if len(self.cmd_list) > content_idx:
+            param_len = int(self.cmd_list[content_len_idx][1:])
+            param_content = self.cmd_list[content_idx]
             assert (
                 len(param_content) == param_len
             ), f"Expected parameter of length {param_len} but received {len(param_content)}"
             return param_len, param_content
         else:
             print(
-                f"Arguments idx incorrect. Command list has {len(cmd_list)} elements but requested idx is {content_idx}"
+                f"Arguments idx incorrect. Command list has {len(self.cmd_list)} elements but requested idx is {content_idx}"
             )
             return (None, None)
 
-    @classmethod
-    def parse_command(cls, cmd_list: List[str], args) -> bytes:
+    def parse_command(self) -> bytes:
         """
         Parses the command list and dispatches the command to the appropriate handler.
 
@@ -59,30 +74,36 @@ class Parser:
         Raises:
             Exception: If the command is not supported.
         """
-        _num_elements = int(cmd_list[ARGS_IDX][1:])
-        print("Received command list: ", cmd_list)
-        cmd = cmd_list[CMD_IDX].strip().upper()
-        cmd_len = int(cmd_list[CMD_LEN_IDX][1:])
+        _num_elements = int(self.cmd_list[ARGS_IDX][1:])
+        print("Received command list: ", self.cmd_list)
+        cmd = self.cmd_list[CMD_IDX].strip().upper()
+        cmd_len = int(self.cmd_list[CMD_LEN_IDX][1:])
         assert (
             len(cmd) == cmd_len
         ), f"Expected argument of length {cmd_len} but received {len(cmd)}"
 
         command_functions = {
-            "PING": cls._handle_ping,
-            "ECHO": cls._handle_echo,
-            "SET": cls._handle_set,
-            "GET": cls._handle_get,
-            "INFO": cls._handle_info,
-            "REPLCONF": cls._handle_replconf,
-            "PSYNC": cls._handle_psync,
+            "PING": self._handle_ping,
+            "ECHO": self._handle_echo,
+            "SET": self._handle_set,
+            "GET": self._handle_get,
+            "INFO": self._handle_info,
+            "REPLCONF": self._handle_replconf,
+            "PSYNC": self._handle_psync,
         }
         if cmd in command_functions:
-            return command_functions[cmd](cmd_list, args)
+            result = command_functions[cmd]()
+            if isinstance(result, List):
+                # Hack: PSYNC needs to send multiple messages.
+                for msg in result:
+                    self.client_socket.send(msg)
+            else:
+                self.client_socket.send(result)
         else:
             raise Exception(f"Command {cmd} not supported!")
 
     @staticmethod
-    def _handle_ping(_cmd_list: List[str], _args) -> bytes:
+    def _handle_ping() -> bytes:
         """
         Handles the PING command.
 
@@ -94,8 +115,7 @@ class Parser:
         """
         return b"+PONG\r\n"
 
-    @classmethod
-    def _handle_echo(cls, cmd_list: List[str], _args) -> bytes:
+    def _handle_echo(self) -> bytes:
         """
         Handles the ECHO command.
 
@@ -105,13 +125,12 @@ class Parser:
         Returns:
             bytes: The response containing the echoed message.
         """
-        param_len, param_content = cls._extract_content(
-            cmd_list, PARAM_LEN_IDX, PARAM_IDX
+        param_len, param_content = self._extract_content(
+            self.cmd_list, PARAM_LEN_IDX, PARAM_IDX
         )
         return f"${param_len}\r\n{param_content}\r\n".encode("utf-8")
 
-    @classmethod
-    def _handle_set(cls, cmd_list: List[str], _args) -> bytes:
+    def _handle_set(self) -> bytes:
         """
         Handles the SET command.
 
@@ -121,19 +140,21 @@ class Parser:
         Returns:
             bytes: The response "+OK\r\n".
         """
-        _key_len, key_content = cls._extract_content(cmd_list, PARAM_LEN_IDX, PARAM_IDX)
-        _val_len, val_content = cls._extract_content(
-            cmd_list, PARAM_ARG_LEN_IDX, PARAM_ARG_IDX
+        _key_len, key_content = self._extract_content(
+            self.cmd_list, PARAM_LEN_IDX, PARAM_IDX
         )
-        _extra_args_len, extra_args_content = cls._extract_content(
-            cmd_list, EXTRA_ARGS_CMD_LEN_IDX, EXTRA_ARGS_CMD_IDX
+        _val_len, val_content = self._extract_content(
+            self.cmd_list, PARAM_ARG_LEN_IDX, PARAM_ARG_IDX
+        )
+        _extra_args_len, extra_args_content = self._extract_content(
+            self.cmd_list, EXTRA_ARGS_CMD_LEN_IDX, EXTRA_ARGS_CMD_IDX
         )
         record = {}
         if extra_args_content:
             if extra_args_content.strip().upper() == "PX":
                 # Add TTL
-                _ttl_len, ttl_content = cls._extract_content(
-                    cmd_list, EXTRA_ARGS_CONTENT_LEN_IDX, EXTRA_ARGS_CONTENT_IDX
+                _ttl_len, ttl_content = self._extract_content(
+                    self.cmd_list, EXTRA_ARGS_CONTENT_LEN_IDX, EXTRA_ARGS_CONTENT_IDX
                 )
                 record.update(
                     {
@@ -147,12 +168,11 @@ class Parser:
                 )
         else:
             record.update({"value": val_content})
-        cls.REDIS_DB.update({key_content: record})
-        print("redis_db: ", cls.REDIS_DB)
+        self.REDIS_DB.update({key_content: record})
+        print("redis_db: ", self.REDIS_DB)
         return b"+OK\r\n"
 
-    @classmethod
-    def _handle_get(cls, cmd_list: List[str], _args) -> bytes:
+    def _handle_get(self) -> bytes:
         """
         Handles the GET command.
 
@@ -162,8 +182,10 @@ class Parser:
         Returns:
             bytes: The response containing the value associated with the key, or "$-1\r\n" if the key is not found.
         """
-        _key_len, key_content = cls._extract_content(cmd_list, PARAM_LEN_IDX, PARAM_IDX)
-        value_struct = cls.REDIS_DB.get(key_content, None)
+        _key_len, key_content = self._extract_content(
+            self.cmd_list, PARAM_LEN_IDX, PARAM_IDX
+        )
+        value_struct = self.REDIS_DB.get(key_content, None)
         if value_struct is None:
             return b"$-1\r\n"
         elif (
@@ -177,8 +199,7 @@ class Parser:
                 )
             )
 
-    @classmethod
-    def _handle_info(cls, _cmd_list: List[str], args: Namespace) -> bytes:
+    def _handle_info(self) -> bytes:
         """
         Handles the INFO command.
 
@@ -188,15 +209,15 @@ class Parser:
         Returns:
             bytes: The response containing the role of the server.
         """
-        if args.replicaof:
+        if self.args.replicaof:
             return b"$10\r\nrole:slave\r\n"
         else:
-            return f"$87\r\nrole:master\nmaster_replid:{cls.REPLICATION_ID}\nmaster_repl_offset:{cls.REPLICATION_OFFSET}\r\n".encode(
+            return f"$87\r\nrole:master\nmaster_replid:{self.REPLICATION_ID}\nmaster_repl_offset:{self.REPLICATION_OFFSET}\r\n".encode(
                 "utf-8"
             )
 
     @staticmethod
-    def _handle_replconf(_cmd_list: List[str], _args: Namespace) -> bytes:
+    def _handle_replconf() -> bytes:
         """
         Handles the REPLCONF command.
 
@@ -209,8 +230,7 @@ class Parser:
         """
         return b"+OK\r\n"
 
-    @classmethod
-    def _handle_psync(cls, _cmd_list: List[str], _args: Namespace) -> bytes:
+    def _handle_psync(self) -> List[bytes]:
         """
         Handles the PSYNC command.
 
@@ -221,7 +241,13 @@ class Parser:
         Returns:
             bytes: The response indicating the PSYNC command was handled successfully.
         """
-        return f"+FULLRESYNC {cls.REPLICATION_ID} {cls.REPLICATION_OFFSET}\r\n".encode("utf-8")
+        rdb_binary = bytes.fromhex(self.RDB_HEX_DUMP)
+        return [
+            f"+FULLRESYNC {self.REPLICATION_ID} {self.REPLICATION_OFFSET}\r\n".encode(
+                "utf-8"
+            ),
+            f"${len(rdb_binary)}\r\n".encode("utf-8") + rdb_binary,
+        ]
 
 
 def process_request(client_socket, _client_addr, args):
@@ -243,9 +269,7 @@ def process_request(client_socket, _client_addr, args):
                 break
             data = data.decode("utf-8")
             cmd_list = data.split("\r\n")
-            result = Parser.parse_command(cmd_list, args)
-            client_socket.send(result)
-
+            Parser(client_socket, cmd_list, args).parse_command()
     except socket.error as e:
         print(f"Socket error: {e}")
     finally:
@@ -363,7 +387,6 @@ class ReplicationHandshake:
             print("Handshake process complete!")
         except socket.error as e:
             print(f"Failed to connect to master: {e}")
-            master_socket.close()
             raise
 
     def perform_psync_handshake(self, master_socket: socket.socket) -> None:
