@@ -138,12 +138,8 @@ class Parser:
         Returns:
             bytes: The response "+OK\r\n".
         """
-        _key_len, key_content = self._extract_content(
-            PARAM_LEN_IDX, PARAM_IDX
-        )
-        _val_len, val_content = self._extract_content(
-            PARAM_ARG_LEN_IDX, PARAM_ARG_IDX
-        )
+        _key_len, key_content = self._extract_content(PARAM_LEN_IDX, PARAM_IDX)
+        _val_len, val_content = self._extract_content(PARAM_ARG_LEN_IDX, PARAM_ARG_IDX)
         _extra_args_len, extra_args_content = self._extract_content(
             EXTRA_ARGS_CMD_LEN_IDX, EXTRA_ARGS_CMD_IDX
         )
@@ -180,9 +176,7 @@ class Parser:
         Returns:
             bytes: The response containing the value associated with the key, or "$-1\r\n" if the key is not found.
         """
-        _key_len, key_content = self._extract_content(
-            PARAM_LEN_IDX, PARAM_IDX
-        )
+        _key_len, key_content = self._extract_content(PARAM_LEN_IDX, PARAM_IDX)
         value_struct = self.REDIS_DB.get(key_content, None)
         if value_struct is None:
             return b"$-1\r\n"
