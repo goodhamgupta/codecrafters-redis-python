@@ -125,9 +125,7 @@ class Parser:
         Returns:
             bytes: The response containing the echoed message.
         """
-        param_len, param_content = self._extract_content(
-            self.cmd_list, PARAM_LEN_IDX, PARAM_IDX
-        )
+        param_len, param_content = self._extract_content(PARAM_LEN_IDX, PARAM_IDX)
         return f"${param_len}\r\n{param_content}\r\n".encode("utf-8")
 
     def _handle_set(self) -> bytes:
