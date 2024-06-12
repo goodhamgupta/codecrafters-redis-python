@@ -185,7 +185,7 @@ class Parser:
             print("No replica detected.")
         if self.args.replicaof:
             print("Command received on replica. WON'T SEND A RESPONSE")
-            return None
+            return "$-1\r\n"
         else:
             return b"+OK\r\n"
 
@@ -402,6 +402,7 @@ class ReplicationHandshake:
             print("Handshake process complete!")
         except socket.error as e:
             print(f"Failed to connect to master: {e}")
+            master_socket.close()
             raise
 
     def perform_psync_handshake(self, master_socket: socket.socket) -> None:
@@ -430,10 +431,11 @@ class ReplicationHandshake:
                 )
             else:
                 raise Exception(
-                    f"Excepted FULLRESYNC from master. Received: {psync_response}"
+                    f"Expected FULLRESYNC from master. Received: {psync_response}"
                 )
         except Exception as e:
             print(f"Failed to connect to master: {e}")
+            master_socket.close()
 
 
 def main():
