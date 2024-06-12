@@ -106,8 +106,10 @@ class Parser:
                 # Hack: PSYNC needs to send multiple messages.
                 for msg in result:
                     self.client_socket.send(msg)
-            else:
+            elif isinstance(result, bytes):
                 self.client_socket.send(result)
+            else:
+                print("Received null result")
         else:
             raise Exception(f"Command {cmd} not supported!")
 
@@ -137,7 +139,7 @@ class Parser:
         param_len, param_content = self._extract_content(PARAM_LEN_IDX, PARAM_IDX)
         return f"${param_len}\r\n{param_content}\r\n".encode("utf-8")
 
-    def _handle_set(self) -> bytes:
+    def _handle_set(self) -> Optional[bytes]:
         """
         Handles the SET command.
 
