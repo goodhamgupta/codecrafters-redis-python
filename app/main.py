@@ -92,6 +92,7 @@ class Parser:
 
         if cmd in command_functions:
             result = command_functions[cmd]()
+            print(f"{cmd} response in parse_command: ", result)
             if isinstance(result, List):
                 # Hack: PSYNC needs to send multiple messages.
                 for msg in result:
@@ -286,9 +287,12 @@ def process_request(client_socket, _client_addr, args):
                 break
             data = data.decode("utf-8")
             cmd_list = data.split("\r\n")
+            print("In process request, received command: ", cmd_list)
             Parser(cmd_list, args).parse_command(client_socket)
-    except socket.error as e:
-        print(f"Socket error: {e}")
+            print("In process request, processed command: ", cmd_list)
+    except socket.error as _e:
+        pass
+        # print(f"Socket error: {e}")
     finally:
         client_socket.close()
 
