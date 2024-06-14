@@ -32,9 +32,7 @@ class Parser:
 
     REPLICA_SOCKETS = []
 
-    def __init__(
-        self, client_socket: socket.socket, cmd_list: List[str], args: Namespace
-    ):
+    def __init__(self, cmd_list: List[str], args: Namespace):
         """
         Initializes the Parser instance.
 
@@ -43,7 +41,6 @@ class Parser:
             cmd_list (List[str]): The list of command arguments received from the client.
             args (Namespace): Additional arguments for the parser.
         """
-        self.client_socket = client_socket
         self.cmd_list = cmd_list
         self.args = args
 
@@ -63,7 +60,7 @@ class Parser:
             )
             return (None, None)
 
-    def parse_command(self) -> bytes:
+    def parse_command(self, client_socket: socket.socket) -> bytes:
         """
         Parses the command list and dispatches the command to the appropriate handler.
 
@@ -99,9 +96,9 @@ class Parser:
             if isinstance(result, List):
                 # Hack: PSYNC needs to send multiple messages.
                 for msg in result:
-                    self.client_socket.send(msg)
+                    client_socket.send(msg)
             elif isinstance(result, bytes):
-                self.client_socket.send(result)
+                client_socket.send(result)
             else:
                 print("Received null result")
         else:
@@ -243,6 +240,7 @@ class Parser:
             _port_len, port_str = self._extract_content(
                 PARAM_ARG_LEN_IDX, PARAM_ARG_IDX
             )
+            print(port_str)
             replica_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             replica_socket.connect(("localhost", int(port_str)))
             Parser.REPLICA_SOCKETS.append(replica_socket)
@@ -289,7 +287,7 @@ def process_request(client_socket, _client_addr, args):
                 break
             data = data.decode("utf-8")
             cmd_list = data.split("\r\n")
-            Parser(client_socket, cmd_list, args).parse_command()
+            Parser(cmd_list, args).parse_command(client_socket)
     except socket.error as e:
         print(f"Socket error: {e}")
     finally:
@@ -390,7 +388,9 @@ class ReplicationHandshake:
         try:
             second_handshake_response = self.send_message(
                 master_socket,
-                b"*3\r\n$8\r\nREPLCONF\r\n$14\r\nlistening-port\r\n$4\r\n6380\r\n",
+                f"*3\r\n$8\r\nREPLCONF\r\n$14\r\nlistening-port\r\n$4\r\n{self.args.port}\r\n".encode(
+                    "utf-8"
+                ),
             )
             if "OK" not in second_handshake_response:
                 raise Exception(
