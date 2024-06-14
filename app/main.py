@@ -388,7 +388,7 @@ class ReplicationHandshake:
         try:
             second_handshake_response = self.send_message(
                 master_socket,
-                f"*3\r\n$8\r\nREPLCONF\r\n$14\r\nlistening-port\r\n$4\r\n{self.args.port}\r\n".encode(
+                f"*3\r\n$8\r\nREPLCONF\r\n$14\r\nlistening-port\r\n${len(str(self.args.port))}\r\n{self.args.port}\r\n".encode(
                     "utf-8"
                 ),
             )
