@@ -290,9 +290,8 @@ def process_request(client_socket, _client_addr, args):
             print("In process request, received command: ", cmd_list)
             Parser(cmd_list, args).parse_command(client_socket)
             print("In process request, processed command: ", cmd_list)
-    except socket.error as _e:
-        pass
-        # print(f"Socket error: {e}")
+    except socket.error as ex:
+        print(f"Socket error: {ex}")
     finally:
         client_socket.close()
 
@@ -437,12 +436,15 @@ class ReplicationHandshake:
                 print(
                     "Received FULLRESYNC from master. Replication handshake complete."
                 )
+                # TODO: Write the received RDB file to disk
+                _rdb_size_response = master_socket.recv(MAX_BYTES_TO_RECEIVE)
             else:
                 raise Exception(
                     f"Expected FULLRESYNC from master. Received: {psync_response}"
                 )
         except Exception as e:
             print(f"Failed to connect to master: {e}")
+        finally:
             master_socket.close()
 
 
