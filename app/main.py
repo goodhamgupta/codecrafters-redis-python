@@ -37,7 +37,6 @@ class Parser:
         Initializes the Parser instance.
 
         Args:
-            client_socket (socket.socket): The socket object for the client connection.
             cmd_list (List[str]): The list of command arguments received from the client.
             args (Namespace): Additional arguments for the parser.
         """
@@ -96,9 +95,9 @@ class Parser:
             if isinstance(result, List):
                 # Hack: PSYNC needs to send multiple messages.
                 for msg in result:
-                    client_socket.send(msg)
+                    client_socket.sendall(msg)
             elif isinstance(result, bytes):
-                client_socket.send(result)
+                client_socket.sendall(result)
             else:
                 print("Received null result")
         else:
