@@ -93,16 +93,10 @@ class Parser:
             "REPLCONF": self._handle_replconf,
             "PSYNC": self._handle_psync,
         }
+
         if cmd in command_functions:
             result = command_functions[cmd]()
             if isinstance(result, List):
-                # Hack: For now, only PSYNC sends multiple messages. We receive PSYNC only from the replica
-                # Hence, we duplicate the current socket to the replica_socket so that we can send WRITE messages
-                # to the replica
-                print("Setting replica socket..")
-                Parser.REPLICA_SOCKETS.append(self.client_socket.dup())
-                print("List of replica sockets: ", Parser.REPLICA_SOCKETS)
-                print("Replica socket set!")
                 # Hack: PSYNC needs to send multiple messages.
                 for msg in result:
                     self.client_socket.send(msg)
@@ -175,6 +169,7 @@ class Parser:
             record.update({"value": val_content})
         self.REDIS_DB.update({key_content: record})
         print("redis_db: ", self.REDIS_DB)
+        print("Replica sockets: ", Parser.REPLICA_SOCKETS)
         if len(Parser.REPLICA_SOCKETS) > 0:
             for candidate_replica_socket in Parser.REPLICA_SOCKETS:
                 print(f"Sending command to replica: {candidate_replica_socket}...")
@@ -231,8 +226,7 @@ class Parser:
                 "utf-8"
             )
 
-    @staticmethod
-    def _handle_replconf() -> bytes:
+    def _handle_replconf(self) -> bytes:
         """
         Handles the REPLCONF command.
 
@@ -243,6 +237,17 @@ class Parser:
         Returns:
             bytes: The response indicating the REPLCONF command was handled successfully.
         """
+        _cmd_len, cmd = self._extract_content(PARAM_LEN_IDX, PARAM_IDX)
+        if cmd == "listening-port":
+            print("Received REPLCONF listening-port cmd. Registering replica..")
+            _port_len, port_str = self._extract_content(
+                PARAM_ARG_LEN_IDX, PARAM_ARG_IDX
+            )
+            replica_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            replica_socket.connect(("localhost", int(port_str)))
+            Parser.REPLICA_SOCKETS.append(replica_socket)
+            print("Replica register. Socket: ", replica_socket)
+
         return b"+OK\r\n"
 
     def _handle_psync(self) -> List[bytes]:
@@ -464,7 +469,9 @@ def main():
     server_socket = socket.create_server(("localhost", args.port), reuse_port=True)
     print(f"Listening on port {args.port}..")
     server_socket.listen(MAX_NUM_UNACCEPTED_CONN)
-    Thread(target=ReplicationHandshake(args).perform_handshake).start()
+    print("Server socket: ", server_socket)
+    if args.replicaof:
+        Thread(target=ReplicationHandshake(args).perform_handshake).start()
     while True:
         (client_socket, _client_add) = server_socket.accept()
         Thread(target=process_request, args=(client_socket, _client_add, args)).start()
