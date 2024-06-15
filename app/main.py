@@ -375,7 +375,7 @@ class ReplicationHandshake:
                     f"Master server did not respond to PING. Response received: {first_handshake_response}"
                 )
         except socket.error as e:
-            print(f"Failed to connect to master: {e}")
+            print(f"Failed to connect to master in PING: {e}")
             master_socket.close()
             raise
         return master_socket
@@ -408,7 +408,7 @@ class ReplicationHandshake:
                 )
             print("Handshake process complete!")
         except socket.error as e:
-            print(f"Failed to connect to master: {e}")
+            print(f"Failed to connect to master in REPLCONF: {e}")
             master_socket.close()
             raise
 
@@ -440,9 +440,6 @@ class ReplicationHandshake:
                 rdb_size_response = master_socket.recv(MAX_BYTES_TO_RECEIVE)
                 master_socket.recv(MAX_BYTES_TO_RECEIVE)
                 print(f"Received RDB size response: {rdb_size_response}")
-                rdb_size = int(rdb_size_response.decode().split("\r\n")[0][1:])
-                _rdb_dump = master_socket.recv(rdb_size + 2)  # +2 for the \r\n ending
-                print(f"Received RDB dump of size: {rdb_size}")
 
                 # Now, handle further commands from the master
                 self.handle_master_commands(master_socket)
@@ -451,7 +448,7 @@ class ReplicationHandshake:
                     f"Expected FULLRESYNC from master. Received: {psync_response}"
                 )
         except Exception as e:
-            print(f"Failed to connect to master: {e}")
+            print(f"Failed to connect to master in PSYNC: {e}")
         finally:
             master_socket.close()
 
