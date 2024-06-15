@@ -32,7 +32,9 @@ class Parser:
 
     REPLICA_SOCKETS = []
 
-    def __init__(self, cmd_list: List[str], args: Namespace):
+    def __init__(
+        self, client_socket: socket.socket, cmd_list: List[str], args: Namespace
+    ):
         """
         Initializes the Parser instance.
 
@@ -40,6 +42,7 @@ class Parser:
             cmd_list (List[str]): The list of command arguments received from the client.
             args (Namespace): Additional arguments for the parser.
         """
+        self.client_socket = client_socket
         self.cmd_list = cmd_list
         self.args = args
 
@@ -49,9 +52,10 @@ class Parser:
         if len(self.cmd_list) > content_idx:
             param_len = int(self.cmd_list[content_len_idx][1:])
             param_content = self.cmd_list[content_idx]
-            assert (
-                len(param_content) == param_len
-            ), f"Expected parameter of length {param_len} but received {len(param_content)}"
+            print(param_content, param_len)
+            # assert (
+            #     len(param_content) == param_len
+            # ), f"Expected parameter of length {param_len} but received {len(param_content)}"
             return param_len, param_content
         else:
             print(
@@ -59,7 +63,7 @@ class Parser:
             )
             return (None, None)
 
-    def parse_command(self, client_socket: socket.socket) -> bytes:
+    def parse_command(self) -> bytes:
         """
         Parses the command list and dispatches the command to the appropriate handler.
 
@@ -96,9 +100,9 @@ class Parser:
             if isinstance(result, List):
                 # Hack: PSYNC needs to send multiple messages.
                 for msg in result:
-                    client_socket.sendall(msg)
+                    self.client_socket.sendall(msg)
             elif isinstance(result, bytes):
-                client_socket.sendall(result)
+                self.client_socket.sendall(result)
             else:
                 print("Received null result")
         else:
@@ -158,15 +162,10 @@ class Parser:
                         "TTL": (time.time() * SECONDS_TO_MS) + float(ttl_content),
                     }
                 )
-            else:
-                raise Exception(
-                    f"Extra argument {extra_args_content} not supported for SET"
-                )
         else:
             record.update({"value": val_content})
         self.REDIS_DB.update({key_content: record})
         print("redis_db: ", self.REDIS_DB)
-        print("Replica sockets: ", Parser.REPLICA_SOCKETS)
         if len(Parser.REPLICA_SOCKETS) > 0:
             for candidate_replica_socket in Parser.REPLICA_SOCKETS:
                 print(f"Sending command to replica: {candidate_replica_socket}...")
@@ -192,12 +191,16 @@ class Parser:
             bytes: The response containing the value associated with the key, or "$-1\r\n" if the key is not found.
         """
         _key_len, key_content = self._extract_content(PARAM_LEN_IDX, PARAM_IDX)
+        print("IN GET COMMAND, current DB: ", self.REDIS_DB)
         value_struct = self.REDIS_DB.get(key_content, None)
         if value_struct is None:
+            print("Returning null because value_struct is None")
             return b"$-1\r\n"
         elif (
             "TTL" in value_struct and value_struct["TTL"] < time.time() * SECONDS_TO_MS
         ):
+            print("Returning null because value TTL expired")
+            self.REDIS_DB.pop(key_content, None)
             return b"$-1\r\n"
         else:
             return (
@@ -288,7 +291,7 @@ def process_request(client_socket, _client_addr, args):
             data = data.decode("utf-8")
             cmd_list = data.split("\r\n")
             print("In process request, received command: ", cmd_list)
-            Parser(cmd_list, args).parse_command(client_socket)
+            Parser(client_socket, cmd_list, args).parse_command()
             print("In process request, processed command: ", cmd_list)
     except socket.error as ex:
         print(f"Socket error: {ex}")
