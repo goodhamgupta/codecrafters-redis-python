@@ -437,7 +437,15 @@ class ReplicationHandshake:
                     "Received FULLRESYNC from master. Replication handshake complete."
                 )
                 # TODO: Write the received RDB file to disk
-                _rdb_size_response = master_socket.recv(MAX_BYTES_TO_RECEIVE)
+                rdb_size_response = master_socket.recv(MAX_BYTES_TO_RECEIVE)
+                master_socket.recv(MAX_BYTES_TO_RECEIVE)
+                print(f"Received RDB size response: {rdb_size_response}")
+                rdb_size = int(rdb_size_response.decode().split("\r\n")[0][1:])
+                _rdb_dump = master_socket.recv(rdb_size + 2)  # +2 for the \r\n ending
+                print(f"Received RDB dump of size: {rdb_size}")
+
+                # Now, handle further commands from the master
+                self.handle_master_commands(master_socket)
             else:
                 raise Exception(
                     f"Expected FULLRESYNC from master. Received: {psync_response}"
@@ -446,6 +454,26 @@ class ReplicationHandshake:
             print(f"Failed to connect to master: {e}")
         finally:
             master_socket.close()
+
+    def handle_master_commands(self, master_socket: socket.socket) -> None:
+        """Handle continuous commands from the master after FULLRESYNC"""
+        print("Listening for commands from master...")
+        while True:
+            try:
+                command = master_socket.recv(MAX_BYTES_TO_RECEIVE)
+                if not command:
+                    break
+                command = command.decode("utf-8")
+                cmd_list = command.split("\r\n")
+                print("Received command from master: ", cmd_list)
+                Parser(cmd_list, self.args).parse_command(master_socket)
+            except socket.error as ex:
+                print(f"Socket error in handle_master_commands: {ex}")
+                break
+            except Exception as e:
+                print(f"Exception in handle_master_commands: {e}")
+                break
+        master_socket.close()
 
 
 def main():
