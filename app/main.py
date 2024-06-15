@@ -177,7 +177,7 @@ class Parser:
             print("No replica detected.")
         if self.args.replicaof:
             print("Command received on replica. WON'T SEND A RESPONSE")
-            return "$-1\r\n"
+            return b"$-1\r\n"
         else:
             return b"+OK\r\n"
 
