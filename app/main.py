@@ -63,7 +63,7 @@ class Parser:
             )
             return (None, None)
 
-    def parse_command(self) -> bytes:
+    def parse_command(self) -> Optional[bytes]:
         """
         Parses the command list and dispatches the command to the appropriate handler.
 
@@ -156,16 +156,18 @@ class Parser:
                 _ttl_len, ttl_content = self._extract_content(
                     EXTRA_ARGS_CONTENT_LEN_IDX, EXTRA_ARGS_CONTENT_IDX
                 )
-                record.update(
-                    {
-                        "value": val_content,
-                        "TTL": (time.time() * SECONDS_TO_MS) + float(ttl_content),
-                    }
-                )
+                if ttl_content:
+                    record.update(
+                        {
+                            "value": val_content,
+                            "TTL": (time.time() * SECONDS_TO_MS) + float(ttl_content),
+                        }
+                    )
+                else:
+                    raise Exception("TTL not provided for SET PX command")
         else:
             record.update({"value": val_content})
         self.REDIS_DB.update({key_content: record})
-        print("redis_db: ", self.REDIS_DB)
         if len(Parser.REPLICA_SOCKETS) > 0:
             for candidate_replica_socket in Parser.REPLICA_SOCKETS:
                 print(f"Sending command to replica: {candidate_replica_socket}...")
@@ -243,11 +245,14 @@ class Parser:
             _port_len, port_str = self._extract_content(
                 PARAM_ARG_LEN_IDX, PARAM_ARG_IDX
             )
-            print(port_str)
-            replica_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            replica_socket.connect(("localhost", int(port_str)))
-            Parser.REPLICA_SOCKETS.append(replica_socket)
-            print("Replica register. Socket: ", replica_socket)
+            if port_str:
+                print(port_str)
+                replica_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                replica_socket.connect(("localhost", int(port_str)))
+                Parser.REPLICA_SOCKETS.append(replica_socket)
+                print("Replica register. Socket: ", replica_socket)
+            else:
+                raise Exception("Port not provided for REPLCONF listening-port command")
 
         return b"+OK\r\n"
 
@@ -466,7 +471,7 @@ class ReplicationHandshake:
                 command = command.decode("utf-8")
                 cmd_list = command.split("\r\n")
                 print("Received command from master: ", cmd_list)
-                Parser(cmd_list, self.args).parse_command(master_socket)
+                Parser(master_socket, cmd_list, self.args).parse_command()
             except socket.error as ex:
                 print(f"Socket error in handle_master_commands: {ex}")
                 break
