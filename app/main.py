@@ -9,16 +9,16 @@ from argparse import Namespace
 MAX_BYTES_TO_RECEIVE = 1024
 MAX_NUM_UNACCEPTED_CONN = 10
 ARGS_IDX = 0
-CMD_LEN_IDX = 1
-CMD_IDX = 2
-PARAM_LEN_IDX = 3
-PARAM_IDX = 4
-PARAM_ARG_LEN_IDX = 5
-PARAM_ARG_IDX = 6
-EXTRA_ARGS_CMD_LEN_IDX = 7
-EXTRA_ARGS_CMD_IDX = 8
-EXTRA_ARGS_CONTENT_LEN_IDX = 9
-EXTRA_ARGS_CONTENT_IDX = 10
+CMD_LEN_IDX = 0
+CMD_IDX = 1
+PARAM_LEN_IDX = 2
+PARAM_IDX = 3
+PARAM_ARG_LEN_IDX = 4
+PARAM_ARG_IDX = 5
+EXTRA_ARGS_CMD_LEN_IDX = 6
+EXTRA_ARGS_CMD_IDX = 7
+EXTRA_ARGS_CONTENT_LEN_IDX = 8
+EXTRA_ARGS_CONTENT_IDX = 9
 SECONDS_TO_MS = 1_000
 
 
@@ -47,15 +47,14 @@ class Parser:
         self.args = args
 
     def _extract_content(
-        self, content_len_idx, content_idx
+        self, cmd_list, content_len_idx, content_idx
     ) -> Tuple[Optional[int], Optional[str]]:
-        if len(self.cmd_list) > content_idx:
-            param_len = int(self.cmd_list[content_len_idx][1:])
-            param_content = self.cmd_list[content_idx]
-            print(param_content, param_len)
-            # assert (
-            #     len(param_content) == param_len
-            # ), f"Expected parameter of length {param_len} but received {len(param_content)}"
+        if len(cmd_list) > content_idx:
+            param_len = int(cmd_list[content_len_idx][1:])
+            param_content = cmd_list[content_idx]
+            assert (
+                len(param_content) == param_len
+            ), f"Expected parameter of length {param_len} but received {len(param_content)}"
             return param_len, param_content
         else:
             print(
@@ -76,40 +75,60 @@ class Parser:
         Raises:
             Exception: If the command is not supported.
         """
-        _num_elements = int(self.cmd_list[ARGS_IDX][1:])
-        print("Received command list: ", self.cmd_list)
-        cmd = self.cmd_list[CMD_IDX].strip().upper()
-        cmd_len = int(self.cmd_list[CMD_LEN_IDX][1:])
-        assert (
-            len(cmd) == cmd_len
-        ), f"Expected argument of length {cmd_len} but received {len(cmd)}"
-
-        command_functions = {
-            "PING": self._handle_ping,
-            "ECHO": self._handle_echo,
-            "SET": self._handle_set,
-            "GET": self._handle_get,
-            "INFO": self._handle_info,
-            "REPLCONF": self._handle_replconf,
-            "PSYNC": self._handle_psync,
-        }
-
-        if cmd in command_functions:
-            result = command_functions[cmd]()
-            print(f"{cmd} response in parse_command: ", result)
-            if isinstance(result, List):
-                # Hack: PSYNC needs to send multiple messages.
-                for msg in result:
-                    self.client_socket.sendall(msg)
-            elif isinstance(result, bytes):
-                self.client_socket.sendall(result)
+        cmd_lists = []
+        i = 0
+        while i < len(self.cmd_list):
+            if self.cmd_list[i].startswith("*"):
+                num_elements = int(self.cmd_list[i][1:])
+                cmd_list = []
+                j = i + 1
+                end_idx = j + num_elements * 2
+                while j < end_idx and j < len(self.cmd_list):
+                    cmd_list.append(self.cmd_list[j])
+                    j += 1
+                cmd_lists.append(cmd_list)
+                i = j  # Move index past the current command block
             else:
-                print("Received null result")
-        else:
-            raise Exception(f"Command {cmd} not supported!")
+                i += 1
+
+        if len(cmd_lists) == 0:
+            print("FALLBACK! Assigning current command to cmd_lists")
+            cmd_lists = [self.cmd_list.copy()]
+        print("Processed CMD LISTS: ", cmd_lists)
+        for cmd_list in cmd_lists:
+            print("Received command list: ", cmd_list)
+            cmd = cmd_list[CMD_IDX].strip().upper()
+            cmd_len = int(cmd_list[CMD_LEN_IDX][1:])
+            assert (
+                len(cmd) == cmd_len
+            ), f"Expected argument of length {cmd_len} but received {len(cmd)}"
+
+            command_functions = {
+                "PING": self._handle_ping,
+                "ECHO": self._handle_echo,
+                "SET": self._handle_set,
+                "GET": self._handle_get,
+                "INFO": self._handle_info,
+                "REPLCONF": self._handle_replconf,
+                "PSYNC": self._handle_psync,
+            }
+
+            if cmd in command_functions:
+                result = command_functions[cmd](cmd_list)
+                print(f"{cmd} response in parse_command: ", result)
+                if isinstance(result, List):
+                    # Hack: PSYNC needs to send multiple messages.
+                    for msg in result:
+                        self.client_socket.sendall(msg)
+                elif isinstance(result, bytes):
+                    self.client_socket.sendall(result)
+                else:
+                    print("Received null result")
+            else:
+                raise Exception(f"Command {cmd} not supported!")
 
     @staticmethod
-    def _handle_ping() -> bytes:
+    def _handle_ping(_cmd_list) -> bytes:
         """
         Handles the PING command.
 
@@ -121,7 +140,7 @@ class Parser:
         """
         return b"+PONG\r\n"
 
-    def _handle_echo(self) -> bytes:
+    def _handle_echo(self, cmd_list) -> bytes:
         """
         Handles the ECHO command.
 
@@ -131,10 +150,12 @@ class Parser:
         Returns:
             bytes: The response containing the echoed message.
         """
-        param_len, param_content = self._extract_content(PARAM_LEN_IDX, PARAM_IDX)
+        param_len, param_content = self._extract_content(
+            cmd_list, PARAM_LEN_IDX, PARAM_IDX
+        )
         return f"${param_len}\r\n{param_content}\r\n".encode("utf-8")
 
-    def _handle_set(self) -> Optional[bytes]:
+    def _handle_set(self, cmd_list) -> Optional[bytes]:
         """
         Handles the SET command.
 
@@ -144,10 +165,14 @@ class Parser:
         Returns:
             bytes: The response "+OK\r\n".
         """
-        _key_len, key_content = self._extract_content(PARAM_LEN_IDX, PARAM_IDX)
-        _val_len, val_content = self._extract_content(PARAM_ARG_LEN_IDX, PARAM_ARG_IDX)
+        _key_len, key_content = self._extract_content(
+            cmd_list, PARAM_LEN_IDX, PARAM_IDX
+        )
+        _val_len, val_content = self._extract_content(
+            cmd_list, PARAM_ARG_LEN_IDX, PARAM_ARG_IDX
+        )
         _extra_args_len, extra_args_content = self._extract_content(
-            EXTRA_ARGS_CMD_LEN_IDX, EXTRA_ARGS_CMD_IDX
+            cmd_list, EXTRA_ARGS_CMD_LEN_IDX, EXTRA_ARGS_CMD_IDX
         )
         record = {}
         if extra_args_content:
@@ -171,18 +196,22 @@ class Parser:
         if len(Parser.REPLICA_SOCKETS) > 0:
             for candidate_replica_socket in Parser.REPLICA_SOCKETS:
                 print(f"Sending command to replica: {candidate_replica_socket}...")
-                replica_command = "\r\n".join(self.cmd_list)
+                replica_command = "\r\n".join(cmd_list)
+                print(f"Replica SET command bytes: {replica_command}".encode("utf-8"))
                 candidate_replica_socket.send(replica_command.encode("utf-8"))
                 print("Message sent to replica!")
         else:
+            print("************************")
             print("No replica detected.")
+            print("************************")
         if self.args.replicaof:
             print("Command received on replica. WON'T SEND A RESPONSE")
             return b"$-1\r\n"
         else:
+            print("Returning OK")
             return b"+OK\r\n"
 
-    def _handle_get(self) -> bytes:
+    def _handle_get(self, cmd_list) -> bytes:
         """
         Handles the GET command.
 
@@ -192,8 +221,14 @@ class Parser:
         Returns:
             bytes: The response containing the value associated with the key, or "$-1\r\n" if the key is not found.
         """
-        _key_len, key_content = self._extract_content(PARAM_LEN_IDX, PARAM_IDX)
-        print("IN GET COMMAND, current DB: ", self.REDIS_DB)
+        _key_len, key_content = self._extract_content(
+            cmd_list, PARAM_LEN_IDX, PARAM_IDX
+        )
+        print("************************")
+        print(
+            f"IN GET COMMAND, cur client: {self.client_socket} current DB: {self.REDIS_DB}"
+        )
+        print("************************")
         value_struct = self.REDIS_DB.get(key_content, None)
         if value_struct is None:
             print("Returning null because value_struct is None")
@@ -211,7 +246,7 @@ class Parser:
                 )
             )
 
-    def _handle_info(self) -> bytes:
+    def _handle_info(self, cmd_list) -> bytes:
         """
         Handles the INFO command.
 
@@ -228,7 +263,7 @@ class Parser:
                 "utf-8"
             )
 
-    def _handle_replconf(self) -> bytes:
+    def _handle_replconf(self, cmd_list) -> bytes:
         """
         Handles the REPLCONF command.
 
@@ -239,11 +274,11 @@ class Parser:
         Returns:
             bytes: The response indicating the REPLCONF command was handled successfully.
         """
-        _cmd_len, cmd = self._extract_content(PARAM_LEN_IDX, PARAM_IDX)
+        _cmd_len, cmd = self._extract_content(cmd_list, PARAM_LEN_IDX, PARAM_IDX)
         if cmd == "listening-port":
             print("Received REPLCONF listening-port cmd. Registering replica..")
             _port_len, port_str = self._extract_content(
-                PARAM_ARG_LEN_IDX, PARAM_ARG_IDX
+                cmd_list, PARAM_ARG_LEN_IDX, PARAM_ARG_IDX
             )
             if port_str:
                 print(port_str)
@@ -256,13 +291,12 @@ class Parser:
 
         return b"+OK\r\n"
 
-    def _handle_psync(self) -> List[bytes]:
+    def _handle_psync(self, _cmd_list) -> List[bytes]:
         """
         Handles the PSYNC command.
 
         Args:
             _cmd_list (list): The list of command arguments.
-            _args (Namespace): The command line arguments parsed by argparse.
 
         Returns:
             bytes: The response indicating the PSYNC command was handled successfully.
@@ -440,6 +474,7 @@ class ReplicationHandshake:
             psync_response = self.send_message(
                 master_socket, b"*3\r\n$5\r\nPSYNC\r\n$1\r\n?\r\n$2\r\n-1\r\n"
             )
+            print("PSYNC RESPONSE: ", psync_response)
             if "FULLRESYNC" in psync_response:
                 print(
                     "Received FULLRESYNC from master. Replication handshake complete."
