@@ -47,8 +47,23 @@ class Parser:
         self.args = args
 
     def _extract_content(
-        self, cmd_list, content_len_idx, content_idx
+        self, cmd_list: List[str], content_len_idx: int, content_idx: int
     ) -> Tuple[Optional[int], Optional[str]]:
+        """
+        Extracts the content from the command list based on the provided indices.
+
+        Args:
+            cmd_list (List[str]): The list of command arguments.
+            content_len_idx (int): The index in the command list where the length of the content is specified.
+            content_idx (int): The index in the command list where the actual content is located.
+
+        Returns:
+            Tuple[Optional[int], Optional[str]]: A tuple containing the length of the content and the content itself.
+            If the indices are incorrect, returns (None, None).
+
+        Raises:
+            AssertionError: If the actual length of the content does not match the specified length.
+        """
         if len(cmd_list) > content_idx:
             param_len = int(cmd_list[content_len_idx][1:])
             param_content = cmd_list[content_idx]
@@ -58,7 +73,7 @@ class Parser:
             return param_len, param_content
         else:
             print(
-                f"Arguments idx incorrect. Command list has {len(self.cmd_list)} elements but requested idx is {content_idx}"
+                f"Arguments idx incorrect. Command list has {len(cmd_list)} elements but requested idx is {content_idx}"
             )
             return (None, None)
 
@@ -193,6 +208,9 @@ class Parser:
         else:
             record.update({"value": val_content})
         self.REDIS_DB.update({key_content: record})
+        print("*****************************")
+        print("Updated DB: ", self.REDIS_DB)
+        print("*****************************")
         if len(Parser.REPLICA_SOCKETS) > 0:
             for candidate_replica_socket in Parser.REPLICA_SOCKETS:
                 print(f"Sending command to replica: {candidate_replica_socket}...")
@@ -200,10 +218,6 @@ class Parser:
                 print(f"Replica SET command bytes: {replica_command}".encode("utf-8"))
                 candidate_replica_socket.send(replica_command.encode("utf-8"))
                 print("Message sent to replica!")
-        else:
-            print("************************")
-            print("No replica detected.")
-            print("************************")
         if self.args.replicaof:
             print("Command received on replica. WON'T SEND A RESPONSE")
             return b"$-1\r\n"
@@ -224,11 +238,9 @@ class Parser:
         _key_len, key_content = self._extract_content(
             cmd_list, PARAM_LEN_IDX, PARAM_IDX
         )
-        print("************************")
         print(
             f"IN GET COMMAND, cur client: {self.client_socket} current DB: {self.REDIS_DB}"
         )
-        print("************************")
         value_struct = self.REDIS_DB.get(key_content, None)
         if value_struct is None:
             print("Returning null because value_struct is None")
