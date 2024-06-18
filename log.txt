@@ -1,0 +1,112 @@
+Initiating test run...
+
+[32m⚡ This is a turbo test run. https://codecrafters.io/turbo[0m
+
+Running tests. Logs should appear shortly...
+
+Debug = true
+
+[33m[tester::#YG4] [0m[94mRunning tests for Stage #YG4 (Replication - Command Processing)[0m
+[33m[tester::#YG4] [0m[94mMaster is running on port 6379[0m
+[33m[tester::#YG4] [0m[94m$ ./spawn_redis_server.sh --port 6380 --replicaof "localhost 6379"[0m
+[33m[your_program] [0mListening on port 6380..
+[33m[your_program] [0mServer socket:  <socket.socket fd=3, family=2, type=1, proto=0, laddr=('127.0.0.1', 6380)>
+[33m[tester::#YG4] [0m[94mmaster: Waiting for replica to initiate handshake with "PING" command[0m
+[33m[tester::#YG4] [0m[36mmaster: Received bytes: "*1\r\n$4\r\nPING\r\n"[0m
+[33m[tester::#YG4] [0m[36mmaster: Received RESP array: ["PING"][0m
+[33m[tester::#YG4] [0m[92mReceived ["PING"][0m
+[33m[tester::#YG4] [0m[94mmaster: Sent "PONG"[0m
+[33m[tester::#YG4] [0m[36mmaster: Sent bytes: "+PONG\r\n"[0m
+[33m[tester::#YG4] [0m[94mmaster: Waiting for replica to send "REPLCONF listening-port 6380" command[0m
+[33m[tester::#YG4] [0m[36mmaster: Received bytes: "*3\r\n$8\r\nREPLCONF\r\n$14\r\nlistening-port\r\n$4\r\n6380\r\n"[0m
+[33m[tester::#YG4] [0m[36mmaster: Received RESP array: ["REPLCONF", "listening-port", "6380"][0m
+[33m[tester::#YG4] [0m[92mReceived ["REPLCONF", "listening-port", "6380"][0m
+[33m[tester::#YG4] [0m[94mmaster: Sent "OK"[0m
+[33m[tester::#YG4] [0m[36mmaster: Sent bytes: "+OK\r\n"[0m
+[33m[your_program] [0mReceived response from master: +PONG
+[33m[tester::#YG4] [0m[94mmaster: Waiting for replica to send "REPLCONF capa" command[0m
+[33m[your_program] [0m
+[33m[tester::#YG4] [0m[36mmaster: Received bytes: "*3\r\n$8\r\nREPLCONF\r\n$4\r\ncapa\r\n$6\r\npsync2\r\n"[0m
+[33m[tester::#YG4] [0m[36mmaster: Received RESP array: ["REPLCONF", "capa", "psync2"][0m
+[33m[tester::#YG4] [0m[92mReceived ["REPLCONF", "capa", "psync2"][0m
+[33m[tester::#YG4] [0m[94mmaster: Sent "OK"[0m
+[33m[tester::#YG4] [0m[36mmaster: Sent bytes: "+OK\r\n"[0m
+[33m[tester::#YG4] [0m[94mmaster: Waiting for replica to send "PSYNC" command[0m
+[33m[your_program] [0mHandshake process complete!
+[33m[tester::#YG4] [0m[36mmaster: Received bytes: "*3\r\n$5\r\nPSYNC\r\n$1\r\n?\r\n$2\r\n-1\r\n"[0m
+[33m[tester::#YG4] [0m[36mmaster: Received RESP array: ["PSYNC", "?", "-1"][0m
+[33m[tester::#YG4] [0m[92mReceived ["PSYNC", "?", "-1"][0m
+[33m[tester::#YG4] [0m[94mmaster: Sent "FULLRESYNC 75cd7bc10c49047e0d163660f3b90625b1af31dc 0"[0m
+[33m[tester::#YG4] [0m[36mmaster: Sent bytes: "+FULLRESYNC 75cd7bc10c49047e0d163660f3b90625b1af31dc 0\r\n"[0m
+[33m[tester::#YG4] [0m[36mSending RDB file...[0m
+[33m[tester::#YG4] [0m[36mmaster: Sent bytes: "$88\r\nREDIS0011\xfa\tredis-ver\x057.2.0\xfa\nredis-bits\xc0@\xfa\x05ctime\xc2m\b\xbce\xfa\bused-mem°\xc4\x10\x00\xfa\baof-base\xc0\x00\xff\xf0n;\xfe\xc0\xffZ\xa2"[0m
+[33m[tester::#YG4] [0m[92mSent RDB file.[0m
+[33m[your_program] [0mReceived FULLRESYNC from master. Replication handshake complete.
+[33m[tester::#YG4] [0m[94mmaster: > SET foo 123[0m
+[33m[tester::#YG4] [0m[36mmaster: Sent bytes: "*3\r\n$3\r\nSET\r\n$3\r\nfoo\r\n$3\r\n123\r\n"[0m
+[33m[tester::#YG4] [0m[94mmaster: > SET bar 456[0m
+[33m[tester::#YG4] [0m[36mmaster: Sent bytes: "*3\r\n$3\r\nSET\r\n$3\r\nbar\r\n$3\r\n456\r\n"[0m
+[33m[tester::#YG4] [0m[94mmaster: > SET baz 789[0m
+[33m[tester::#YG4] [0m[36mmaster: Sent bytes: "*3\r\n$3\r\nSET\r\n$3\r\nbaz\r\n$3\r\n789\r\n"[0m
+[33m[tester::#YG4] [0m[94mGetting key foo[0m
+[33m[tester::#YG4] [0m[94mclient: $ redis-cli GET foo[0m
+[33m[tester::#YG4] [0m[36mclient: Sent bytes: "*2\r\n$3\r\nGET\r\n$3\r\nfoo\r\n"[0m
+[33m[your_program] [0mReceived RDB size response: b'$88\r\nREDIS0011\xfa\tredis-ver\x057.2.0\xfa\nredis-bits\xc0@\xfa\x05ctime\xc2m\x08\xbce\xfa\x08used-mem\xc2\xb0\xc4\x10\x00\xfa\x08aof-base\xc0\x00\xff\xf0n;\xfe\xc0\xffZ\xa2'
+[33m[your_program] [0mListening for commands from master...
+[33m[your_program] [0mIn process request, received command:  ['*2', '$3', 'GET', '$3', 'foo', '']
+[33m[tester::#YG4] [0m[36mclient: Received bytes: "$-1\r\n"[0m
+[33m[tester::#YG4] [0m[36mclient: Received RESP null bulk string: "$-1\r\n"[0m
+[33m[your_program] [0mReceived command list:  ['*2', '$3', 'GET', '$3', 'foo', '']
+[33m[your_program] [0mGET response in parse_command:  b'$-1\r\n'
+[33m[your_program] [0mIn process request, processed command:  ['*2', '$3', 'GET', '$3', 'foo', '']
+[33m[tester::#YG4] [0m[94mRetrying... (1/5 attempts)[0m
+[33m[tester::#YG4] [0m[94mclient: > GET foo[0m
+[33m[tester::#YG4] [0m[36mclient: Sent bytes: "*2\r\n$3\r\nGET\r\n$3\r\nfoo\r\n"[0m
+[33m[tester::#YG4] [0m[36mclient: Received bytes: "$-1\r\n"[0m
+[33m[tester::#YG4] [0m[36mclient: Received RESP null bulk string: "$-1\r\n"[0m
+[33m[your_program] [0mIn process request, received command:  ['*2', '$3', 'GET', '$3', 'foo', '']
+[33m[your_program] [0mReceived command list:  ['*2', '$3', 'GET', '$3', 'foo', '']
+[33m[your_program] [0mGET response in parse_command:  b'$-1\r\n'
+[33m[your_program] [0mIn process request, processed command:  ['*2', '$3', 'GET', '$3', 'foo', '']
+[33m[tester::#YG4] [0m[94mRetrying... (2/5 attempts)[0m
+[33m[tester::#YG4] [0m[94mclient: > GET foo[0m
+[33m[tester::#YG4] [0m[36mclient: Sent bytes: "*2\r\n$3\r\nGET\r\n$3\r\nfoo\r\n"[0m
+[33m[your_program] [0mIn process request, received command:  ['*2', '$3', 'GET', '$3', 'foo', '']
+[33m[your_program] [0mReceived command list:  ['*2', '$3', 'GET', '$3', 'foo', '']
+[33m[your_program] [0mGET response in parse_command:  b'$-1\r\n'
+[33m[tester::#YG4] [0m[36mclient: Received bytes: "$-1\r\n"[0m
+[33m[tester::#YG4] [0m[36mclient: Received RESP null bulk string: "$-1\r\n"[0m
+[33m[your_program] [0mIn process request, processed command:  ['*2', '$3', 'GET', '$3', 'foo', '']
+[33m[tester::#YG4] [0m[94mRetrying... (3/5 attempts)[0m
+[33m[tester::#YG4] [0m[94mclient: > GET foo[0m
+[33m[tester::#YG4] [0m[36mclient: Sent bytes: "*2\r\n$3\r\nGET\r\n$3\r\nfoo\r\n"[0m
+[33m[tester::#YG4] [0m[36mclient: Received bytes: "$-1\r\n"[0m
+[33m[tester::#YG4] [0m[36mclient: Received RESP null bulk string: "$-1\r\n"[0m
+[33m[your_program] [0mIn process request, received command:  ['*2', '$3', 'GET', '$3', 'foo', '']
+[33m[your_program] [0mReceived command list:  ['*2', '$3', 'GET', '$3', 'foo', '']
+[33m[your_program] [0mGET response in parse_command:  b'$-1\r\n'
+[33m[your_program] [0mIn process request, processed command:  ['*2', '$3', 'GET', '$3', 'foo', '']
+[33m[tester::#YG4] [0m[94mRetrying... (4/5 attempts)[0m
+[33m[tester::#YG4] [0m[94mclient: > GET foo[0m
+[33m[tester::#YG4] [0m[36mclient: Sent bytes: "*2\r\n$3\r\nGET\r\n$3\r\nfoo\r\n"[0m
+[33m[your_program] [0mIn process request, received command:  ['*2', '$3', 'GET', '$3', 'foo', '']
+[33m[your_program] [0mReceived command list:  ['*2', '$3', 'GET', '$3', 'foo', '']
+[33m[your_program] [0mGET response in parse_command:  b'$-1\r\n'
+[33m[your_program] [0mIn process request, processed command:  ['*2', '$3', 'GET', '$3', 'foo', '']
+[33m[tester::#YG4] [0m[36mclient: Received bytes: "$-1\r\n"[0m
+[33m[tester::#YG4] [0m[36mclient: Received RESP null bulk string: "$-1\r\n"[0m
+[33m[tester::#YG4] [0m[94mRetrying... (5/5 attempts)[0m
+[33m[tester::#YG4] [0m[94mclient: > GET foo[0m
+[33m[tester::#YG4] [0m[36mclient: Sent bytes: "*2\r\n$3\r\nGET\r\n$3\r\nfoo\r\n"[0m
+[33m[your_program] [0mIn process request, received command:  ['*2', '$3', 'GET', '$3', 'foo', '']
+[33m[tester::#YG4] [0m[36mclient: Received bytes: "$-1\r\n"[0m
+[33m[tester::#YG4] [0m[36mclient: Received RESP null bulk string: "$-1\r\n"[0m
+[33m[your_program] [0mReceived command list:  ['*2', '$3', 'GET', '$3', 'foo', '']
+[33m[your_program] [0mGET response in parse_command:  b'$-1\r\n'
+[33m[your_program] [0mIn process request, processed command:  ['*2', '$3', 'GET', '$3', 'foo', '']
+[33m[tester::#YG4] [0m[91mExpected simple string or bulk string, got NIL[0m
+[33m[tester::#YG4] [0m[91mTest failed[0m
+[33m[tester::#YG4] [0m[36mTerminating program[0m
+[33m[tester::#YG4] [0m[36mProgram terminated successfully[0m
+
+View our article on debugging test failures: https://codecrafters.io/debug

@@ -45,6 +45,7 @@ class Parser:
         self.client_socket = client_socket
         self.cmd_list = cmd_list
         self.args = args
+        self.role = "REPLICA" if self.args.replicaof else "MASTER"
 
     def _extract_content(
         self, cmd_list: List[str], content_len_idx: int, content_idx: int
@@ -73,7 +74,7 @@ class Parser:
             return param_len, param_content
         else:
             print(
-                f"Arguments idx incorrect. Command list has {len(cmd_list)} elements but requested idx is {content_idx}"
+                f"[{self.role}] Arguments idx incorrect. Command list has {len(cmd_list)} elements but requested idx is {content_idx}"
             )
             return (None, None)
 
@@ -107,11 +108,11 @@ class Parser:
                 i += 1
 
         if len(cmd_lists) == 0:
-            print("FALLBACK! Assigning current command to cmd_lists")
+            print(f"[{self.role}] FALLBACK! Assigning current command to cmd_lists")
             cmd_lists = [self.cmd_list.copy()]
-        print("Processed CMD LISTS: ", cmd_lists)
+        print(f"[{self.role}] Processed CMD LISTS: ", cmd_lists)
         for cmd_list in cmd_lists:
-            print("Received command list: ", cmd_list)
+            print(f"[{self.role}] Received command list: ", cmd_list)
             cmd = cmd_list[CMD_IDX].strip().upper()
             cmd_len = int(cmd_list[CMD_LEN_IDX][1:])
             assert (
@@ -130,7 +131,7 @@ class Parser:
 
             if cmd in command_functions:
                 result = command_functions[cmd](cmd_list)
-                print(f"{cmd} response in parse_command: ", result)
+                print(f"[{self.role}] {cmd} response in parse_command: ", result)
                 if isinstance(result, List):
                     # Hack: PSYNC needs to send multiple messages.
                     for msg in result:
@@ -138,7 +139,7 @@ class Parser:
                 elif isinstance(result, bytes):
                     self.client_socket.sendall(result)
                 else:
-                    print("Received null result")
+                    print(f"[{self.role}] Received null result")
             else:
                 raise Exception(f"Command {cmd} not supported!")
 
@@ -180,13 +181,13 @@ class Parser:
         Returns:
             bytes: The response "+OK\r\n".
         """
-        _key_len, key_content = self._extract_content(
+        key_len, key_content = self._extract_content(
             cmd_list, PARAM_LEN_IDX, PARAM_IDX
         )
-        _val_len, val_content = self._extract_content(
+        val_len, val_content = self._extract_content(
             cmd_list, PARAM_ARG_LEN_IDX, PARAM_ARG_IDX
         )
-        _extra_args_len, extra_args_content = self._extract_content(
+        extra_args_len, extra_args_content = self._extract_content(
             cmd_list, EXTRA_ARGS_CMD_LEN_IDX, EXTRA_ARGS_CMD_IDX
         )
         record = {}
@@ -194,7 +195,7 @@ class Parser:
             if extra_args_content.strip().upper() == "PX":
                 # Add TTL
                 _ttl_len, ttl_content = self._extract_content(
-                    EXTRA_ARGS_CONTENT_LEN_IDX, EXTRA_ARGS_CONTENT_IDX
+                    cmd_list, EXTRA_ARGS_CONTENT_LEN_IDX, EXTRA_ARGS_CONTENT_IDX
                 )
                 if ttl_content:
                     record.update(
@@ -209,14 +210,22 @@ class Parser:
             record.update({"value": val_content})
         self.REDIS_DB.update({key_content: record})
         print("*****************************")
-        print("Updated DB: ", self.REDIS_DB)
+        print(f"[{self.role}] Updated DB: ", self.REDIS_DB)
         print("*****************************")
         if len(Parser.REPLICA_SOCKETS) > 0:
-            for candidate_replica_socket in Parser.REPLICA_SOCKETS:
-                print(f"Sending command to replica: {candidate_replica_socket}...")
-                replica_command = "\r\n".join(cmd_list)
-                print(f"Replica SET command bytes: {replica_command}".encode("utf-8"))
-                candidate_replica_socket.send(replica_command.encode("utf-8"))
+            for replica_socket, replica_port in Parser.REPLICA_SOCKETS:
+                print(
+                    f"[{self.role}] Sending command to replica: {replica_socket} on port {replica_port}..."
+                )
+                cmd_count = sum(list(map(lambda x: 1 if "$" in x else 0, cmd_list)))
+                print("Original cmd_list: ", cmd_list)
+                replica_command = "\r\n".join([f"*{cmd_count}"] + cmd_list) + "\r\n"
+                print(
+                    f"[{self.role}] Replica SET command bytes: {replica_command}".encode(
+                        "utf-8"
+                    )
+                )
+                replica_socket.send(replica_command.encode("utf-8"))
                 print("Message sent to replica!")
         if self.args.replicaof:
             print("Command received on replica. WON'T SEND A RESPONSE")
@@ -239,16 +248,16 @@ class Parser:
             cmd_list, PARAM_LEN_IDX, PARAM_IDX
         )
         print(
-            f"IN GET COMMAND, cur client: {self.client_socket} current DB: {self.REDIS_DB}"
+            f"[{self.role}] IN GET COMMAND, cur client: {self.client_socket} current DB: {self.REDIS_DB}"
         )
         value_struct = self.REDIS_DB.get(key_content, None)
         if value_struct is None:
-            print("Returning null because value_struct is None")
+            print(f"[{self.role}] Returning null because value_struct is None")
             return b"$-1\r\n"
         elif (
             "TTL" in value_struct and value_struct["TTL"] < time.time() * SECONDS_TO_MS
         ):
-            print("Returning null because value TTL expired")
+            print(f"[{self.role}] Returning null because value TTL expired")
             self.REDIS_DB.pop(key_content, None)
             return b"$-1\r\n"
         else:
@@ -281,27 +290,29 @@ class Parser:
 
         Args:
             cmd_list (list): The list of command arguments.
-            _args (Namespace): The command line arguments parsed by argparse.
 
         Returns:
             bytes: The response indicating the REPLCONF command was handled successfully.
         """
         _cmd_len, cmd = self._extract_content(cmd_list, PARAM_LEN_IDX, PARAM_IDX)
         if cmd == "listening-port":
-            print("Received REPLCONF listening-port cmd. Registering replica..")
+            print(
+                f"[{self.role}] Received REPLCONF listening-port cmd. Registering replica.."
+            )
             _port_len, port_str = self._extract_content(
                 cmd_list, PARAM_ARG_LEN_IDX, PARAM_ARG_IDX
             )
             if port_str:
-                print(port_str)
-                replica_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                replica_socket.connect(("localhost", int(port_str)))
-                Parser.REPLICA_SOCKETS.append(replica_socket)
-                print("Replica register. Socket: ", replica_socket)
+                Parser.REPLICA_SOCKETS.append((self.client_socket.dup(), int(port_str)))
+                print(f"[{self.role}] Replica register. Socket: ", self.client_socket)
             else:
                 raise Exception("Port not provided for REPLCONF listening-port command")
-
-        return b"+OK\r\n"
+            return b"+OK\r\n"
+        elif cmd == "capa":
+            print(f"[{self.role}] Received REPLCONF capa cmd. Sending ACK..")
+            return b"+OK\r\n"
+        else:
+            raise Exception(f"Unknown REPLCONF command: {cmd}")
 
     def _handle_psync(self, _cmd_list) -> List[bytes]:
         """
@@ -347,7 +358,8 @@ def process_request(client_socket, _client_addr, args):
     except socket.error as ex:
         print(f"Socket error: {ex}")
     finally:
-        client_socket.close()
+        print("Closing client socket")
+        # client_socket.close()
 
 
 class ReplicationHandshake:
@@ -381,11 +393,11 @@ class ReplicationHandshake:
 
     def send_message(self, master_socket: socket.socket, message: bytes) -> str:
         """
-        Send a REPLCONF command to the master server.
+        Send a command to the master server.
 
         Args:
             master_socket (socket.socket): The socket object connected to the master server.
-            message (bytes): The REPLCONF command to be sent.
+            message (bytes): The command to be sent.
 
         Returns:
             str: The response from the master server.
@@ -429,8 +441,8 @@ class ReplicationHandshake:
                     f"Master server did not respond to PING. Response received: {first_handshake_response}"
                 )
         except socket.error as e:
-            print(f"Failed to connect to master in PING: {e}")
-            master_socket.close()
+            print(f"Failed to connect to master in PING: {e}. Closing socket..")
+            # master_socket.close()
             raise
         return master_socket
 
@@ -452,6 +464,7 @@ class ReplicationHandshake:
                 raise Exception(
                     f"Master server did not respond to REPLCONF. Response received: {second_handshake_response}"
                 )
+            print("Second handshake response: ", second_handshake_response)
             final_handshake_response = self.send_message(
                 master_socket,
                 b"*3\r\n$8\r\nREPLCONF\r\n$4\r\ncapa\r\n$6\r\npsync2\r\n",
@@ -460,6 +473,7 @@ class ReplicationHandshake:
                 raise Exception(
                     f"Master server did not respond to REPLCONF capabilities. Response received: {final_handshake_response}"
                 )
+            print("Final handshake response: ", final_handshake_response)
             print("Handshake process complete!")
         except socket.error as e:
             print(f"Failed to connect to master in REPLCONF: {e}")
@@ -493,11 +507,12 @@ class ReplicationHandshake:
                 )
                 # TODO: Write the received RDB file to disk
                 rdb_size_response = master_socket.recv(MAX_BYTES_TO_RECEIVE)
-                master_socket.recv(MAX_BYTES_TO_RECEIVE)
                 print(f"Received RDB size response: {rdb_size_response}")
+                resp = master_socket.recv(MAX_BYTES_TO_RECEIVE)
+                print("RDB 2nd response: ", resp)
 
                 # Now, handle further commands from the master
-                self.handle_master_commands(master_socket)
+                self.handle_master_commands(master_socket, resp)
             else:
                 raise Exception(
                     f"Expected FULLRESYNC from master. Received: {psync_response}"
@@ -505,11 +520,18 @@ class ReplicationHandshake:
         except Exception as e:
             print(f"Failed to connect to master in PSYNC: {e}")
         finally:
-            master_socket.close()
+            print("Closing master socket...")
+            # master_socket.close()
 
-    def handle_master_commands(self, master_socket: socket.socket) -> None:
+    def handle_master_commands(
+        self, master_socket: socket.socket, first_response=None
+    ) -> None:
         """Handle continuous commands from the master after FULLRESYNC"""
         print("Listening for commands from master...")
+        if first_response:
+            command = first_response.decode("utf-8")
+            cmd_list = command.split("\r\n")
+            Parser(master_socket, cmd_list, self.args).parse_command()
         while True:
             try:
                 command = master_socket.recv(MAX_BYTES_TO_RECEIVE)
@@ -525,7 +547,8 @@ class ReplicationHandshake:
             except Exception as e:
                 print(f"Exception in handle_master_commands: {e}")
                 break
-        master_socket.close()
+        print("Closing master socket...")
+        # master_socket.close()
 
 
 def main():
