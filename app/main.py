@@ -25,6 +25,7 @@ NUM_BYTES_RECEIVED_SO_FAR = 0
 
 
 class Parser:
+    MASTER_PORT = 6379
     REDIS_DB = {}
 
     REPLICATION_ID = "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb"
@@ -52,6 +53,7 @@ class Parser:
         self.cmd_list = cmd_list
         self.cmd_bytes = cmd_bytes
         self.track_bytes = False
+        self.client_port = client_socket.getsockname()[1]
         self.args = args
         self.role = "REPLICA" if self.args.replicaof else "MASTER"
 
@@ -140,10 +142,13 @@ class Parser:
             if cmd in command_functions:
                 result = command_functions[cmd](cmd_list)
                 print(f"[{self.role}] {cmd} response in parse_command: ", result)
-                if isinstance(result, bytes):
-                    self.client_socket.sendall(result)
+                if self.client_port != self.MASTER_PORT:
+                    if isinstance(result, bytes):
+                        self.client_socket.sendall(result)
+                    else:
+                        print(f"[{self.role}] Received null result")
                 else:
-                    print(f"[{self.role}] Received null result")
+                    print(f"[{self.role}] Not sending response to client as it is a master")
             else:
                 raise Exception(f"Command {cmd} not supported!")
             # Track the number of bytes received so far
@@ -165,9 +170,7 @@ class Parser:
         Returns:
             bytes: The response "+PONG\r\n".
         """
-        client_port = self.client_socket.getpeername()[1]
-        if client_port != 6379:
-            return b"+PONG\r\n"
+        return b"+PONG\r\n"
 
     def _handle_echo(self, cmd_list) -> bytes:
         """
@@ -236,7 +239,7 @@ class Parser:
                         "utf-8"
                     )
                 )
-                replica_socket.send(replica_command.encode("utf-8"))
+                replica_socket.sendall(replica_command.encode("utf-8"))
                 print("Message sent to replica!")
         if self.args.replicaof:
             print("Command received on replica. WON'T SEND A RESPONSE")
@@ -331,7 +334,7 @@ class Parser:
                 print(f"[{self.role}] Received REPLCONF capa cmd. Sending ACK..")
                 return b"+OK\r\n"
             elif cmd == "GETACK" and self.role == "REPLICA":
-                print(f"[{self.role}] Received REPLCONF getack cmd. Sending ACK..")
+                print(f"[{self.role}] Received REPLCONF GETACK cmd. Sending ACK..")
                 num_bytes_len = len(str(NUM_BYTES_RECEIVED_SO_FAR))
                 print(
                     f"[{self.role}] Bytes received so far: {NUM_BYTES_RECEIVED_SO_FAR}"
