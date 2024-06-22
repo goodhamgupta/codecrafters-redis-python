@@ -21,6 +21,8 @@ EXTRA_ARGS_CMD_IDX = 7
 EXTRA_ARGS_CONTENT_LEN_IDX = 8
 EXTRA_ARGS_CONTENT_IDX = 9
 SECONDS_TO_MS = 1_000
+global NUM_BYTES_RECEIVED_SO_FAR
+NUM_BYTES_RECEIVED_SO_FAR = 0
 
 
 class Parser:
@@ -50,7 +52,6 @@ class Parser:
         self.client_socket = client_socket
         self.cmd_list = cmd_list
         self.cmd_bytes = cmd_bytes
-        self.num_bytes_received_so_far = 0
         self.track_bytes = False
         self.args = args
         self.role = "REPLICA" if self.args.replicaof else "MASTER"
@@ -146,7 +147,9 @@ class Parser:
                     print(f"[{self.role}] Received null result")
             else:
                 raise Exception(f"Command {cmd} not supported!")
-            self.num_bytes_received_so_far += len(self.cmd_bytes)
+            print("Updating num_bytes_received_so_far..")
+            NUM_BYTES_RECEIVED_SO_FAR += len(self.cmd_bytes)
+            print("Current num_bytes_received_so_far: ", NUM_BYTES_RECEIVED_SO_FAR)
 
         # Track the number of bytes received so far
 
@@ -326,11 +329,11 @@ class Parser:
                 return b"+OK\r\n"
             elif cmd == "GETACK":
                 print(f"[{self.role}] Received REPLCONF getack cmd. Sending ACK..")
-                num_bytes_len = len(str(self.num_bytes_received_so_far))
+                num_bytes_len = len(str(NUM_BYTES_RECEIVED_SO_FAR))
                 print(
-                    f"[{self.role}] Bytes received so far: {self.num_bytes_received_so_far}"
+                    f"[{self.role}] Bytes received so far: {NUM_BYTES_RECEIVED_SO_FAR}"
                 )
-                return f"*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n${num_bytes_len}\r\n{self.num_bytes_received_so_far}\r\n".encode(
+                return f"*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n${num_bytes_len}\r\n{NUM_BYTES_RECEIVED_SO_FAR}\r\n".encode(
                     "utf-8"
                 )
         else:
