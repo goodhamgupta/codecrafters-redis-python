@@ -147,11 +147,12 @@ class Parser:
             else:
                 raise Exception(f"Command {cmd} not supported!")
             # Track the number of bytes received so far
-            print("Updating num_bytes_received_so_far..")
             if self.role == "REPLICA":
                 global NUM_BYTES_RECEIVED_SO_FAR
+                print(f"Current num_bytes_received_so_far: {NUM_BYTES_RECEIVED_SO_FAR}.  Updating..")
                 NUM_BYTES_RECEIVED_SO_FAR += len(self.cmd_bytes)
-            print("Current num_bytes_received_so_far: ", NUM_BYTES_RECEIVED_SO_FAR)
+                print("Updated num_bytes_received_so_far: ", NUM_BYTES_RECEIVED_SO_FAR)
+            print(f"[{self.role}] {cmd} processed successfully!")
 
 
     def _handle_ping(self, _cmd_list) -> Optional[bytes]:
@@ -164,7 +165,8 @@ class Parser:
         Returns:
             bytes: The response "+PONG\r\n".
         """
-        if self.role != "REPLICA":
+        client_port = self.client_socket.getpeername()[1]
+        if client_port != 6379:
             return b"+PONG\r\n"
 
     def _handle_echo(self, cmd_list) -> bytes:
@@ -328,7 +330,7 @@ class Parser:
             elif cmd == "CAPA":
                 print(f"[{self.role}] Received REPLCONF capa cmd. Sending ACK..")
                 return b"+OK\r\n"
-            elif cmd == "GETACK":
+            elif cmd == "GETACK" and self.role == "REPLICA":
                 print(f"[{self.role}] Received REPLCONF getack cmd. Sending ACK..")
                 num_bytes_len = len(str(NUM_BYTES_RECEIVED_SO_FAR))
                 print(
@@ -366,7 +368,7 @@ class Parser:
                 print("Sending REPLCONF GETACK to replica..")
                 # Hack: Sleep for 2 seconds to ensure that the replica is ready to receive the command
                 # and the REPLCONF GETACK command is not concatenated with the RDB file.
-                time.sleep(1)
+                # time.sleep(1)
                 replica_socket.sendall(
                     b"*3\r\n$8\r\nREPLCONF\r\n$6\r\nGETACK\r\n$1\r\n*\r\n"
                 )
@@ -394,12 +396,11 @@ def process_request(client_socket, _client_addr, args):
             cmd_list = data.split("\r\n")
             print("In process request, received command: ", cmd_list)
             Parser(client_socket, cmd_list, recv_bytes, args).parse_command()
-            print("In process request, processed command: ", cmd_list)
     except socket.error as ex:
         print(f"Socket error: {ex}")
     finally:
         print("Closing client socket")
-        # client_socket.close()
+        client_socket.close()
 
 
 class ReplicationHandshake:
@@ -427,9 +428,12 @@ class ReplicationHandshake:
         Returns:
             socket.socket: The socket object connected to the master server.
         """
-        master_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        master_socket.connect((master_ip, int(master_port)))
-        return master_socket
+        try:
+            master_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            master_socket.connect((master_ip, int(master_port)))
+            return master_socket
+        except Exception as ex:
+            raise Exception(f"Error connecting to master: {ex}")
 
     def send_and_receive(self, master_socket: socket.socket, message: bytes) -> str:
         """
@@ -470,8 +474,8 @@ class ReplicationHandshake:
         Returns:
             socket.socket: The socket object connected to the master server.
         """
+        master_socket = self.connect_to_master(master_ip, master_port)
         try:
-            master_socket = self.connect_to_master(master_ip, master_port)
             first_handshake_response = self.send_and_receive(
                 master_socket, b"*1\r\n$4\r\nPING\r\n"
             )
@@ -482,7 +486,7 @@ class ReplicationHandshake:
                 )
         except socket.error as e:
             print(f"Failed to connect to master in PING: {e}. Closing socket..")
-            # master_socket.close()
+            master_socket.close()
             raise
         return master_socket
 
