@@ -21,7 +21,6 @@ EXTRA_ARGS_CMD_IDX = 7
 EXTRA_ARGS_CONTENT_LEN_IDX = 8
 EXTRA_ARGS_CONTENT_IDX = 9
 SECONDS_TO_MS = 1_000
-global NUM_BYTES_RECEIVED_SO_FAR
 NUM_BYTES_RECEIVED_SO_FAR = 0
 
 
@@ -147,11 +146,13 @@ class Parser:
                     print(f"[{self.role}] Received null result")
             else:
                 raise Exception(f"Command {cmd} not supported!")
+            # Track the number of bytes received so far
             print("Updating num_bytes_received_so_far..")
-            NUM_BYTES_RECEIVED_SO_FAR += len(self.cmd_bytes)
+            if self.role == "REPLICA":
+                global NUM_BYTES_RECEIVED_SO_FAR
+                NUM_BYTES_RECEIVED_SO_FAR += len(self.cmd_bytes)
             print("Current num_bytes_received_so_far: ", NUM_BYTES_RECEIVED_SO_FAR)
 
-        # Track the number of bytes received so far
 
     def _handle_ping(self, _cmd_list) -> Optional[bytes]:
         """
@@ -603,7 +604,7 @@ class ReplicationHandshake:
                 print(f"Exception in handle_master_commands: {e}")
                 break
         print("Closing master socket in handle_master_commands...")
-        # master_socket.close()
+        master_socket.close()
 
 
 def main():
