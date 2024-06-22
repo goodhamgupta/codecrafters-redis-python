@@ -34,7 +34,11 @@ class Parser:
     REPLICA_SOCKETS = []
 
     def __init__(
-        self, client_socket: socket.socket, cmd_list: List[str], args: Namespace
+        self,
+        client_socket: socket.socket,
+        cmd_list: List[str],
+        cmd_bytes: bytes,
+        args: Namespace,
     ):
         """
         Initializes the Parser instance.
@@ -45,6 +49,9 @@ class Parser:
         """
         self.client_socket = client_socket
         self.cmd_list = cmd_list
+        self.cmd_bytes = cmd_bytes
+        self.num_bytes_received_so_far = 0
+        self.track_bytes = False
         self.args = args
         self.role = "REPLICA" if self.args.replicaof else "MASTER"
 
@@ -139,9 +146,11 @@ class Parser:
                     print(f"[{self.role}] Received null result")
             else:
                 raise Exception(f"Command {cmd} not supported!")
+            self.num_bytes_received_so_far += len(self.cmd_bytes)
 
-    @staticmethod
-    def _handle_ping(_cmd_list) -> bytes:
+        # Track the number of bytes received so far
+
+    def _handle_ping(self, _cmd_list) -> Optional[bytes]:
         """
         Handles the PING command.
 
@@ -151,7 +160,8 @@ class Parser:
         Returns:
             bytes: The response "+PONG\r\n".
         """
-        return b"+PONG\r\n"
+        if self.role != "REPLICA":
+            return b"+PONG\r\n"
 
     def _handle_echo(self, cmd_list) -> bytes:
         """
@@ -316,7 +326,13 @@ class Parser:
                 return b"+OK\r\n"
             elif cmd == "GETACK":
                 print(f"[{self.role}] Received REPLCONF getack cmd. Sending ACK..")
-                return b"*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$1\r\n0\r\n"
+                num_bytes_len = len(str(self.num_bytes_received_so_far))
+                print(
+                    f"[{self.role}] Bytes received so far: {self.num_bytes_received_so_far}"
+                )
+                return f"*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n${num_bytes_len}\r\n{self.num_bytes_received_so_far}\r\n".encode(
+                    "utf-8"
+                )
         else:
             raise Exception(f"Unknown REPLCONF command: {cmd}")
 
@@ -346,7 +362,7 @@ class Parser:
                 print("Sending REPLCONF GETACK to replica..")
                 # Hack: Sleep for 2 seconds to ensure that the replica is ready to receive the command
                 # and the REPLCONF GETACK command is not concatenated with the RDB file.
-                time.sleep(2)
+                time.sleep(1)
                 replica_socket.sendall(
                     b"*3\r\n$8\r\nREPLCONF\r\n$6\r\nGETACK\r\n$1\r\n*\r\n"
                 )
@@ -367,13 +383,13 @@ def process_request(client_socket, _client_addr, args):
     """
     try:
         while True:
-            data = client_socket.recv(MAX_BYTES_TO_RECEIVE)
-            if not data:
+            recv_bytes = client_socket.recv(MAX_BYTES_TO_RECEIVE)
+            if not recv_bytes:
                 break
-            data = data.decode("utf-8")
+            data = recv_bytes.decode("utf-8")
             cmd_list = data.split("\r\n")
             print("In process request, received command: ", cmd_list)
-            Parser(client_socket, cmd_list, args).parse_command()
+            Parser(client_socket, cmd_list, recv_bytes, args).parse_command()
             print("In process request, processed command: ", cmd_list)
     except socket.error as ex:
         print(f"Socket error: {ex}")
@@ -528,8 +544,12 @@ class ReplicationHandshake:
                 # TODO: Write the received RDB file to disk
                 rdb_file_response = master_socket.recv(MAX_BYTES_TO_RECEIVE)
                 print(f"Received RDB file response: {rdb_file_response}")
+                last_command = None
+                if len(rdb_file_response) > RDB_FILE_SIZE_BYTES:
+                    print("Received additional command after RDB file")
+                    last_command = rdb_file_response[RDB_FILE_SIZE_BYTES:]
 
-                self.handle_master_commands(master_socket)
+                self.handle_master_commands(master_socket, last_command)
             else:
                 raise Exception(
                     f"Expected FULLRESYNC from master. Received: {psync_response}"
@@ -541,23 +561,38 @@ class ReplicationHandshake:
             # master_socket.close()
 
     def handle_master_commands(
-        self, master_socket: socket.socket, first_response=None
+        self, master_socket: socket.socket, first_response: Optional[bytes] = None
     ) -> None:
-        """Handle continuous commands from the master after FULLRESYNC"""
+        """
+        Handle continuous commands from the master after FULLRESYNC.
+
+        This method listens for commands from the master server after the FULLRESYNC process.
+        It receives commands from the master, decodes them, and passes them to the Parser for processing.
+        If an error occurs during command handling, the method breaks out of the loop and closes the master socket.
+
+        Args:
+            master_socket (socket.socket): The socket object connected to the master server.
+            first_response (Optional[bytes]): The first response received from the master, if any.
+
+        Returns:
+            None
+        """
         print("Listening for commands from master...")
         if first_response:
             command = first_response.decode("utf-8")
             cmd_list = command.split("\r\n")
-            Parser(master_socket, cmd_list, self.args).parse_command()
+            Parser(master_socket, cmd_list, first_response, self.args).parse_command()
         while True:
             try:
-                command = master_socket.recv(MAX_BYTES_TO_RECEIVE)
-                if not command:
+                command_bytes = master_socket.recv(MAX_BYTES_TO_RECEIVE)
+                if not command_bytes:
                     break
-                command = command.decode("utf-8")
+                command = command_bytes.decode("utf-8")
                 cmd_list = command.split("\r\n")
                 print("Received command from master: ", cmd_list)
-                Parser(master_socket, cmd_list, self.args).parse_command()
+                Parser(
+                    master_socket, cmd_list, command_bytes, self.args
+                ).parse_command()
             except socket.error as ex:
                 print(f"Socket error in handle_master_commands: {ex}")
                 break
