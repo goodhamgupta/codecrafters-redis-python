@@ -7,6 +7,7 @@ from argparse import Namespace
 
 
 MAX_BYTES_TO_RECEIVE = 1024
+RDB_FILE_SIZE_BYTES = 93
 MAX_NUM_UNACCEPTED_CONN = 10
 ARGS_IDX = 0
 CMD_LEN_IDX = 0
@@ -132,11 +133,7 @@ class Parser:
             if cmd in command_functions:
                 result = command_functions[cmd](cmd_list)
                 print(f"[{self.role}] {cmd} response in parse_command: ", result)
-                if isinstance(result, List):
-                    # Hack: PSYNC needs to send multiple messages.
-                    for msg in result:
-                        self.client_socket.sendall(msg)
-                elif isinstance(result, bytes):
+                if isinstance(result, bytes):
                     self.client_socket.sendall(result)
                 else:
                     print(f"[{self.role}] Received null result")
@@ -181,9 +178,7 @@ class Parser:
         Returns:
             bytes: The response "+OK\r\n".
         """
-        key_len, key_content = self._extract_content(
-            cmd_list, PARAM_LEN_IDX, PARAM_IDX
-        )
+        key_len, key_content = self._extract_content(cmd_list, PARAM_LEN_IDX, PARAM_IDX)
         val_len, val_content = self._extract_content(
             cmd_list, PARAM_ARG_LEN_IDX, PARAM_ARG_IDX
         )
@@ -284,7 +279,7 @@ class Parser:
                 "utf-8"
             )
 
-    def _handle_replconf(self, cmd_list) -> bytes:
+    def _handle_replconf(self, cmd_list) -> Optional[bytes]:
         """
         Handles the REPLCONF command.
 
@@ -295,26 +290,37 @@ class Parser:
             bytes: The response indicating the REPLCONF command was handled successfully.
         """
         _cmd_len, cmd = self._extract_content(cmd_list, PARAM_LEN_IDX, PARAM_IDX)
-        if cmd == "listening-port":
-            print(
-                f"[{self.role}] Received REPLCONF listening-port cmd. Registering replica.."
-            )
-            _port_len, port_str = self._extract_content(
-                cmd_list, PARAM_ARG_LEN_IDX, PARAM_ARG_IDX
-            )
-            if port_str:
-                Parser.REPLICA_SOCKETS.append((self.client_socket.dup(), int(port_str)))
-                print(f"[{self.role}] Replica register. Socket: ", self.client_socket)
-            else:
-                raise Exception("Port not provided for REPLCONF listening-port command")
-            return b"+OK\r\n"
-        elif cmd == "capa":
-            print(f"[{self.role}] Received REPLCONF capa cmd. Sending ACK..")
-            return b"+OK\r\n"
+        if cmd:
+            cmd = cmd.strip().upper()
+            if cmd == "LISTENING-PORT":
+                print(
+                    f"[{self.role}] Received REPLCONF listening-port cmd. Registering replica.."
+                )
+                _port_len, port_str = self._extract_content(
+                    cmd_list, PARAM_ARG_LEN_IDX, PARAM_ARG_IDX
+                )
+                if port_str:
+                    Parser.REPLICA_SOCKETS.append(
+                        (self.client_socket.dup(), int(port_str))
+                    )
+                    print(
+                        f"[{self.role}] Replica register. Socket: ", self.client_socket
+                    )
+                else:
+                    raise Exception(
+                        "Port not provided for REPLCONF listening-port command"
+                    )
+                return b"+OK\r\n"
+            elif cmd == "CAPA":
+                print(f"[{self.role}] Received REPLCONF capa cmd. Sending ACK..")
+                return b"+OK\r\n"
+            elif cmd == "GETACK":
+                print(f"[{self.role}] Received REPLCONF getack cmd. Sending ACK..")
+                return b"*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$1\r\n0\r\n"
         else:
             raise Exception(f"Unknown REPLCONF command: {cmd}")
 
-    def _handle_psync(self, _cmd_list) -> List[bytes]:
+    def _handle_psync(self, _cmd_list) -> None:
         """
         Handles the PSYNC command.
 
@@ -325,12 +331,26 @@ class Parser:
             bytes: The response indicating the PSYNC command was handled successfully.
         """
         rdb_binary = bytes.fromhex(self.RDB_HEX_DUMP)
-        return [
+        fullresync_response = [
             f"+FULLRESYNC {self.REPLICATION_ID} {self.REPLICATION_OFFSET}\r\n".encode(
                 "utf-8"
             ),
             f"${len(rdb_binary)}\r\n".encode("utf-8") + rdb_binary,
         ]
+        for response in fullresync_response:
+            print(f"[{self.role}] Sending response: {response}")
+            self.client_socket.sendall(response)
+
+        if self.role == "MASTER":
+            for replica_socket, port in Parser.REPLICA_SOCKETS:
+                print("Sending REPLCONF GETACK to replica..")
+                # Hack: Sleep for 2 seconds to ensure that the replica is ready to receive the command
+                # and the REPLCONF GETACK command is not concatenated with the RDB file.
+                time.sleep(2)
+                replica_socket.sendall(
+                    b"*3\r\n$8\r\nREPLCONF\r\n$6\r\nGETACK\r\n$1\r\n*\r\n"
+                )
+                print(f"[{self.role}] Sent REPLCONF GETACK to replica at port {port}")
 
 
 def process_request(client_socket, _client_addr, args):
@@ -391,7 +411,7 @@ class ReplicationHandshake:
         master_socket.connect((master_ip, int(master_port)))
         return master_socket
 
-    def send_message(self, master_socket: socket.socket, message: bytes) -> str:
+    def send_and_receive(self, master_socket: socket.socket, message: bytes) -> str:
         """
         Send a command to the master server.
 
@@ -432,7 +452,7 @@ class ReplicationHandshake:
         """
         try:
             master_socket = self.connect_to_master(master_ip, master_port)
-            first_handshake_response = self.send_message(
+            first_handshake_response = self.send_and_receive(
                 master_socket, b"*1\r\n$4\r\nPING\r\n"
             )
             print(f"Received response from master: {first_handshake_response}")
@@ -451,10 +471,10 @@ class ReplicationHandshake:
         Perform the REPLCONF handshake process.
 
         Args:
-            master_socket (socket.socket): The socket object connected to the master server.
+            master_s in perform_psync_handshakeocket (socket.socket): The socket object connected to the master server.
         """
         try:
-            second_handshake_response = self.send_message(
+            second_handshake_response = self.send_and_receive(
                 master_socket,
                 f"*3\r\n$8\r\nREPLCONF\r\n$14\r\nlistening-port\r\n${len(str(self.args.port))}\r\n{self.args.port}\r\n".encode(
                     "utf-8"
@@ -465,7 +485,7 @@ class ReplicationHandshake:
                     f"Master server did not respond to REPLCONF. Response received: {second_handshake_response}"
                 )
             print("Second handshake response: ", second_handshake_response)
-            final_handshake_response = self.send_message(
+            final_handshake_response = self.send_and_receive(
                 master_socket,
                 b"*3\r\n$8\r\nREPLCONF\r\n$4\r\ncapa\r\n$6\r\npsync2\r\n",
             )
@@ -497,7 +517,7 @@ class ReplicationHandshake:
             None
         """
         try:
-            psync_response = self.send_message(
+            psync_response = self.send_and_receive(
                 master_socket, b"*3\r\n$5\r\nPSYNC\r\n$1\r\n?\r\n$2\r\n-1\r\n"
             )
             print("PSYNC RESPONSE: ", psync_response)
@@ -506,13 +526,10 @@ class ReplicationHandshake:
                     "Received FULLRESYNC from master. Replication handshake complete."
                 )
                 # TODO: Write the received RDB file to disk
-                rdb_size_response = master_socket.recv(MAX_BYTES_TO_RECEIVE)
-                print(f"Received RDB size response: {rdb_size_response}")
-                resp = master_socket.recv(MAX_BYTES_TO_RECEIVE)
-                print("RDB 2nd response: ", resp)
+                rdb_file_response = master_socket.recv(MAX_BYTES_TO_RECEIVE)
+                print(f"Received RDB file response: {rdb_file_response}")
 
-                # Now, handle further commands from the master
-                self.handle_master_commands(master_socket, resp)
+                self.handle_master_commands(master_socket)
             else:
                 raise Exception(
                     f"Expected FULLRESYNC from master. Received: {psync_response}"
@@ -520,7 +537,7 @@ class ReplicationHandshake:
         except Exception as e:
             print(f"Failed to connect to master in PSYNC: {e}")
         finally:
-            print("Closing master socket...")
+            print("Closing master socket in perform_psync_handshake...")
             # master_socket.close()
 
     def handle_master_commands(
@@ -547,7 +564,7 @@ class ReplicationHandshake:
             except Exception as e:
                 print(f"Exception in handle_master_commands: {e}")
                 break
-        print("Closing master socket...")
+        print("Closing master socket in handle_master_commands...")
         # master_socket.close()
 
 
