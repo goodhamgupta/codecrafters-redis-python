@@ -142,13 +142,10 @@ class Parser:
             if cmd in command_functions:
                 result = command_functions[cmd](cmd_list)
                 print(f"[{self.role}] {cmd} response in parse_command: ", result)
-                if self.client_port != self.MASTER_PORT:
-                    if isinstance(result, bytes):
-                        self.client_socket.sendall(result)
-                    else:
-                        print(f"[{self.role}] Received null result")
+                if isinstance(result, bytes):
+                    self.client_socket.sendall(result)
                 else:
-                    print(f"[{self.role}] Not sending response to client as it is a master")
+                    print(f"[{self.role}] Received null result")
             else:
                 raise Exception(f"Command {cmd} not supported!")
             # Track the number of bytes received so far
@@ -170,6 +167,9 @@ class Parser:
         Returns:
             bytes: The response "+PONG\r\n".
         """
+        if self.role == "REPLICA":
+            print("[REPLICA] Received PING from MASTER. Will not respond.")
+            return
         return b"+PONG\r\n"
 
     def _handle_echo(self, cmd_list) -> bytes:
@@ -243,7 +243,8 @@ class Parser:
                 print("Message sent to replica!")
         if self.args.replicaof:
             print("Command received on replica. WON'T SEND A RESPONSE")
-            return b"$-1\r\n"
+            return None
+            # return b"$-1\r\n"
         else:
             print("Returning OK")
             return b"+OK\r\n"
