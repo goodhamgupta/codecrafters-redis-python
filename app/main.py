@@ -137,7 +137,7 @@ class Parser:
                 "INFO": self._handle_info,
                 "REPLCONF": self._handle_replconf,
                 "PSYNC": self._handle_psync,
-                "WAIT": self._handle_wait
+                "WAIT": self._handle_wait,
             }
 
             if cmd in command_functions:
@@ -145,22 +145,29 @@ class Parser:
                 print(f"[{self.role}] {cmd} response in parse_command: ", result)
                 if isinstance(result, bytes):
                     self.client_socket.sendall(result)
+                    print(f"[{self.role}] Sent response for {cmd}: {result}")
                 else:
-                    print(f"[{self.role}] Received null result")
+                    print(f"[{self.role}] Received null result for {cmd}")
+
                 if self.role == "REPLICA":
                     global NUM_BYTES_RECEIVED_SO_FAR
                     cmd_count = sum(list(map(lambda x: 1 if "$" in x else 0, cmd_list)))
-                    cur_cmd_bytes = (f"*{cmd_count}\r\n" + "\r\n".join(cmd_list) + "\r\n").encode("utf-8")
+                    cur_cmd_bytes = (
+                        f"*{cmd_count}\r\n" + "\r\n".join(cmd_list) + "\r\n"
+                    ).encode("utf-8")
                     print("cur_cmd_bytes: ", cur_cmd_bytes)
                     print("length of cur_cmd_bytes: ", len(cur_cmd_bytes))
-                    print(f"Current num_bytes_received_so_far: {NUM_BYTES_RECEIVED_SO_FAR}.  Updating..")
+                    print(
+                        f"Current num_bytes_received_so_far: {NUM_BYTES_RECEIVED_SO_FAR}.  Updating.."
+                    )
                     NUM_BYTES_RECEIVED_SO_FAR += len(cur_cmd_bytes)
-                    print("Updated num_bytes_received_so_far: ", NUM_BYTES_RECEIVED_SO_FAR)
+                    print(
+                        "Updated num_bytes_received_so_far: ", NUM_BYTES_RECEIVED_SO_FAR
+                    )
             else:
                 raise Exception(f"Command {cmd} not supported!")
             # Track the number of bytes received so far
             print(f"[{self.role}] {cmd} processed successfully!")
-
 
     def _handle_ping(self, _cmd_list) -> Optional[bytes]:
         """
@@ -245,27 +252,24 @@ class Parser:
                     )
                 )
                 replica_socket.sendall(replica_command.encode("utf-8"))
-                print("Message sent to replica!")
+                print(f"Message sent to replica for command: {cmd_list}")
+                replconf_getack_resp = self._send_replconf_getack(replica_socket)
+                if replconf_getack_resp:
+                    print(
+                        f"[{self.role}] Received REPLCONF ACK from replica on port {replica_port}"
+                    )
+                else:
+                    print(
+                        f"[{self.role}] Failed to receive REPLCONF ACK from replica on port {replica_port}"
+                    )
 
-            for replica_socket, replica_port in Parser.REPLICA_SOCKETS:
-                print(f"[{self.role}] Sending REPLCONF GETACK to replica..")
-                # Hack: Sleep for 2 seconds to ensure that the replica is ready to receive the command
-                # and the REPLCONF GETACK command is not concatenated with the RDB file.
-                replica_socket.sendall(
-                    b"*3\r\n$8\r\nREPLCONF\r\n$6\r\nGETACK\r\n$1\r\n*\r\n"
-                )
-                print(f"[{self.role}] Sent REPLCONF GETACK to replica at port {replica_port}")
-                _response = replica_socket.recv(MAX_BYTES_TO_RECEIVE)
-
-        if self.role == "REPLICA":
-            print("Command received on replica. WON'T SEND A RESPONSE")
-            return None
-            # return b"$-1\r\n"
-        else:
-            print("Returning OK")
-            return b"+OK\r\n"
-
-
+        # if self.role == "REPLICA":
+        #     print("Command received on replica. WON'T SEND A RESPONSE")
+        #     return None
+        #     # return b"$-1\r\n"
+        # else:
+        #     print("Returning OK")
+        return b"+OK\r\n"
 
     def _handle_get(self, cmd_list) -> bytes:
         """
@@ -385,28 +389,77 @@ class Parser:
             print(f"[{self.role}] Sending response: {response}")
             self.client_socket.sendall(response)
 
-        if self.role == "MASTER":
-            for replica_socket, port in Parser.REPLICA_SOCKETS:
-                print(f"[{self.role}] Sending REPLCONF GETACK to replica in PSYNC..")
-                # Hack: Sleep for 2 seconds to ensure that the replica is ready to receive the command
-                # and the REPLCONF GETACK command is not concatenated with the RDB file.
-                time.sleep(2)
-                replica_socket.sendall(
-                    b"*3\r\n$8\r\nREPLCONF\r\n$6\r\nGETACK\r\n$1\r\n*\r\n"
-                )
-                print(f"[{self.role}] Sent REPLCONF GETACK to replica at port {port} in PSYNC")
+        # if self.role == "MASTER":
+        #     for replica_socket, port in Parser.REPLICA_SOCKETS:
+        #         # Hack: Sleep for 2 seconds to ensure that the replica is ready to receive the command
+        #         # and the REPLCONF GETACK command is not concatenated with the RDB file.
+        #         time.sleep(2)
+        #         print(f"[{self.role}] Sending REPLCONF GETACK to replica in PSYNC..")
+        #         self._send_replconf_getack(replica_socket)
+        #         print(
+        #             f"[{self.role}] Sent REPLCONF GETACK to replica at port {port} in PSYNC"
+        #         )
 
-    def _handle_wait(self, _cmd_list) -> bytes:
+    def _send_replconf_getack(self, replica_socket):
+        """
+        Sends REPLCONF GETACK to a replica and processes the response.
+
+        Args:
+            replica_socket (socket.socket): The socket connected to the replica.
+
+        Returns:
+            bool: True if the replica acknowledged, False otherwise.
+        """
+        try:
+            replica_socket.sendall(
+                b"*3\r\n$8\r\nREPLCONF\r\n$6\r\nGETACK\r\n$1\r\n*\r\n"
+            )
+            print(f"[{self.role}] Sent REPLCONF GETACK to replica")
+            response = replica_socket.recv(MAX_BYTES_TO_RECEIVE).decode("utf-8")
+            print(f"[{self.role}] Received response from replica: {response}")
+            return "REPLCONF ACK" in response
+        except Exception as e:
+            print(f"Error communicating with replica: {e}")
+            return False
+
+    def _handle_wait(self, cmd_list) -> bytes:
         """
         Handles the WAIT command.
 
         Args:
-            _cmd_list (list): The list of command arguments.
+            cmd_list (list): The list of command arguments.
 
         Returns:
-            bytes: The response ":0\r\n".
+            bytes: The response containing the number of replicas that acknowledged the command.
         """
-        return f":{len(self.REPLICA_SOCKETS)}\r\n".encode('utf-8')
+        num_replicas, timeout = int(cmd_list[PARAM_IDX]), int(cmd_list[PARAM_ARG_IDX])
+        timeout_ms = timeout / 1000  # Convert milliseconds to seconds
+        start_time = time.time()
+        acknowledged_replicas = 0
+
+        print(
+            f"[MASTER] WAIT command received. Waiting for {num_replicas} replicas with timeout {timeout_ms} seconds"
+        )
+
+        while (
+            time.time() - start_time < timeout_ms
+            and acknowledged_replicas < num_replicas
+        ):
+            for replica_socket, _ in self.REPLICA_SOCKETS:
+                if self._send_replconf_getack(replica_socket):
+                    acknowledged_replicas += 1
+                    print(
+                        f"[MASTER] Replica acknowledged. Total: {acknowledged_replicas}"
+                    )
+                    if acknowledged_replicas >= num_replicas:
+                        break
+
+            if acknowledged_replicas < num_replicas:
+                time.sleep(0.01)  # Short sleep to avoid busy waiting
+
+        result = f":{acknowledged_replicas}\r\n".encode("utf-8")
+        print(f"[MASTER] WAIT command completed. Returning: {result}")
+        return result
 
 
 def process_request(client_socket, _client_addr, args):
