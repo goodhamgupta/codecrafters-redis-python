@@ -146,14 +146,18 @@ class Parser:
                     self.client_socket.sendall(result)
                 else:
                     print(f"[{self.role}] Received null result")
+                if self.role == "REPLICA":
+                    global NUM_BYTES_RECEIVED_SO_FAR
+                    cmd_count = sum(list(map(lambda x: 1 if "$" in x else 0, cmd_list)))
+                    cur_cmd_bytes = (f"*{cmd_count}\r\n" + "\r\n".join(cmd_list) + "\r\n").encode("utf-8")
+                    print("cur_cmd_bytes: ", cur_cmd_bytes)
+                    print("length of cur_cmd_bytes: ", len(cur_cmd_bytes))
+                    print(f"Current num_bytes_received_so_far: {NUM_BYTES_RECEIVED_SO_FAR}.  Updating..")
+                    NUM_BYTES_RECEIVED_SO_FAR += len(cur_cmd_bytes)
+                    print("Updated num_bytes_received_so_far: ", NUM_BYTES_RECEIVED_SO_FAR)
             else:
                 raise Exception(f"Command {cmd} not supported!")
             # Track the number of bytes received so far
-            if self.role == "REPLICA":
-                global NUM_BYTES_RECEIVED_SO_FAR
-                print(f"Current num_bytes_received_so_far: {NUM_BYTES_RECEIVED_SO_FAR}.  Updating..")
-                NUM_BYTES_RECEIVED_SO_FAR += len(self.cmd_bytes)
-                print("Updated num_bytes_received_so_far: ", NUM_BYTES_RECEIVED_SO_FAR)
             print(f"[{self.role}] {cmd} processed successfully!")
 
 
@@ -372,7 +376,7 @@ class Parser:
                 print("Sending REPLCONF GETACK to replica..")
                 # Hack: Sleep for 2 seconds to ensure that the replica is ready to receive the command
                 # and the REPLCONF GETACK command is not concatenated with the RDB file.
-                # time.sleep(1)
+                time.sleep(2)
                 replica_socket.sendall(
                     b"*3\r\n$8\r\nREPLCONF\r\n$6\r\nGETACK\r\n$1\r\n*\r\n"
                 )
