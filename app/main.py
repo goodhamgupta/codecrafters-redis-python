@@ -246,6 +246,17 @@ class Parser:
                 )
                 replica_socket.sendall(replica_command.encode("utf-8"))
                 print("Message sent to replica!")
+
+            for replica_socket, replica_port in Parser.REPLICA_SOCKETS:
+                print(f"[{self.role}] Sending REPLCONF GETACK to replica..")
+                # Hack: Sleep for 2 seconds to ensure that the replica is ready to receive the command
+                # and the REPLCONF GETACK command is not concatenated with the RDB file.
+                replica_socket.sendall(
+                    b"*3\r\n$8\r\nREPLCONF\r\n$6\r\nGETACK\r\n$1\r\n*\r\n"
+                )
+                print(f"[{self.role}] Sent REPLCONF GETACK to replica at port {replica_port}")
+                _response = replica_socket.recv(MAX_BYTES_TO_RECEIVE)
+
         if self.role == "REPLICA":
             print("Command received on replica. WON'T SEND A RESPONSE")
             return None
@@ -253,6 +264,8 @@ class Parser:
         else:
             print("Returning OK")
             return b"+OK\r\n"
+
+
 
     def _handle_get(self, cmd_list) -> bytes:
         """
@@ -374,14 +387,14 @@ class Parser:
 
         if self.role == "MASTER":
             for replica_socket, port in Parser.REPLICA_SOCKETS:
-                print("Sending REPLCONF GETACK to replica..")
+                print(f"[{self.role}] Sending REPLCONF GETACK to replica in PSYNC..")
                 # Hack: Sleep for 2 seconds to ensure that the replica is ready to receive the command
                 # and the REPLCONF GETACK command is not concatenated with the RDB file.
                 time.sleep(2)
                 replica_socket.sendall(
                     b"*3\r\n$8\r\nREPLCONF\r\n$6\r\nGETACK\r\n$1\r\n*\r\n"
                 )
-                print(f"[{self.role}] Sent REPLCONF GETACK to replica at port {port}")
+                print(f"[{self.role}] Sent REPLCONF GETACK to replica at port {port} in PSYNC")
 
     def _handle_wait(self, _cmd_list) -> bytes:
         """
