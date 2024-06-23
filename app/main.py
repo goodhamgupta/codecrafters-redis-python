@@ -393,7 +393,7 @@ class Parser:
         Returns:
             bytes: The response ":0\r\n".
         """
-        return b":0\r\n"
+        return f":{len(self.REPLICA_SOCKETS)}\r\n".encode('utf-8')
 
 
 def process_request(client_socket, _client_addr, args):
