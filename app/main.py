@@ -137,6 +137,7 @@ class Parser:
                 "INFO": self._handle_info,
                 "REPLCONF": self._handle_replconf,
                 "PSYNC": self._handle_psync,
+                "WAIT": self._handle_wait
             }
 
             if cmd in command_functions:
@@ -245,7 +246,7 @@ class Parser:
                 )
                 replica_socket.sendall(replica_command.encode("utf-8"))
                 print("Message sent to replica!")
-        if self.args.replicaof:
+        if self.role == "REPLICA":
             print("Command received on replica. WON'T SEND A RESPONSE")
             return None
             # return b"$-1\r\n"
@@ -296,7 +297,7 @@ class Parser:
         Returns:
             bytes: The response containing the role of the server.
         """
-        if self.args.replicaof:
+        if self.role == "REPLICA":
             return b"$10\r\nrole:slave\r\n"
         else:
             return f"$87\r\nrole:master\nmaster_replid:{self.REPLICATION_ID}\nmaster_repl_offset:{self.REPLICATION_OFFSET}\r\n".encode(
@@ -381,6 +382,18 @@ class Parser:
                     b"*3\r\n$8\r\nREPLCONF\r\n$6\r\nGETACK\r\n$1\r\n*\r\n"
                 )
                 print(f"[{self.role}] Sent REPLCONF GETACK to replica at port {port}")
+
+    def _handle_wait(self, _cmd_list) -> bytes:
+        """
+        Handles the WAIT command.
+
+        Args:
+            _cmd_list (list): The list of command arguments.
+
+        Returns:
+            bytes: The response ":0\r\n".
+        """
+        return b":0\r\n"
 
 
 def process_request(client_socket, _client_addr, args):
