@@ -49,10 +49,9 @@ class Parser:
             cmd_list (List[str]): The list of command arguments received from the client.
             args (Namespace): Additional arguments for the parser.
         """
-        self.client_socket = client_socket
+        self.client_socket = client_socket.dup()
         self.cmd_list = cmd_list
         self.cmd_bytes = cmd_bytes
-        self.track_bytes = False
         self.client_port = client_socket.getsockname()[1]
         self.args = args
         self.role = "REPLICA" if self.args.replicaof else "MASTER"
@@ -139,13 +138,16 @@ class Parser:
                 "PSYNC": self._handle_psync,
                 "WAIT": self._handle_wait,
             }
+            last_result = None
 
             if cmd in command_functions:
                 result = command_functions[cmd](cmd_list)
                 print(f"[{self.role}] {cmd} response in parse_command: ", result)
                 if isinstance(result, bytes):
-                    self.client_socket.sendall(result)
+                    print(f"[{self.role}] Sending response for {cmd}..")
+                    self.client_socket.send(result)
                     print(f"[{self.role}] Sent response for {cmd}: {result}")
+                    last_result = result
                 else:
                     print(f"[{self.role}] Received null result for {cmd}")
 
@@ -168,6 +170,7 @@ class Parser:
                 raise Exception(f"Command {cmd} not supported!")
             # Track the number of bytes received so far
             print(f"[{self.role}] {cmd} processed successfully!")
+            return last_result
 
     def _handle_ping(self, _cmd_list) -> Optional[bytes]:
         """
@@ -253,22 +256,14 @@ class Parser:
                 )
                 replica_socket.sendall(replica_command.encode("utf-8"))
                 print(f"Message sent to replica for command: {cmd_list}")
-                replconf_getack_resp = self._send_replconf_getack(replica_socket)
-                if replconf_getack_resp:
-                    print(
-                        f"[{self.role}] Received REPLCONF ACK from replica on port {replica_port}"
-                    )
-                else:
-                    print(
-                        f"[{self.role}] Failed to receive REPLCONF ACK from replica on port {replica_port}"
-                    )
 
-        # if self.role == "REPLICA":
-        #     print("Command received on replica. WON'T SEND A RESPONSE")
-        #     return None
-        #     # return b"$-1\r\n"
-        # else:
-        #     print("Returning OK")
+        print(f"[{self.role}] SET command processed successfully!")
+        if self.role == "REPLICA":
+            print(f"[{self.role}] Command received on replica. WON'T SEND A RESPONSE")
+            return None
+            # return b"$-1\r\n"
+        else:
+            print("Returning OK")
         return b"+OK\r\n"
 
     def _handle_get(self, cmd_list) -> bytes:
@@ -356,15 +351,21 @@ class Parser:
             elif cmd == "CAPA":
                 print(f"[{self.role}] Received REPLCONF capa cmd. Sending ACK..")
                 return b"+OK\r\n"
-            elif cmd == "GETACK" and self.role == "REPLICA":
-                print(f"[{self.role}] Received REPLCONF GETACK cmd. Sending ACK..")
-                num_bytes_len = len(str(NUM_BYTES_RECEIVED_SO_FAR))
-                print(
-                    f"[{self.role}] Bytes received so far: {NUM_BYTES_RECEIVED_SO_FAR}"
-                )
-                return f"*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n${num_bytes_len}\r\n{NUM_BYTES_RECEIVED_SO_FAR}\r\n".encode(
-                    "utf-8"
-                )
+            elif cmd == "GETACK":
+                if self.role == "REPLICA":
+                    print(f"[{self.role}] Received REPLCONF GETACK cmd. Sending ACK..")
+                    num_bytes_len = len(str(NUM_BYTES_RECEIVED_SO_FAR))
+                    print(
+                        f"[{self.role}] Bytes received so far: {NUM_BYTES_RECEIVED_SO_FAR}"
+                    )
+                    return f"*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n${num_bytes_len}\r\n{NUM_BYTES_RECEIVED_SO_FAR}\r\n".encode(
+                        "utf-8"
+                    )
+                else:
+                    print(
+                        f"[{self.role}] Received REPLCONF GETACK cmd on MASTER. Ignoring.."
+                    )
+                    return None
         else:
             raise Exception(f"Unknown REPLCONF command: {cmd}")
 
@@ -389,37 +390,40 @@ class Parser:
             print(f"[{self.role}] Sending response: {response}")
             self.client_socket.sendall(response)
 
-        # if self.role == "MASTER":
-        #     for replica_socket, port in Parser.REPLICA_SOCKETS:
-        #         # Hack: Sleep for 2 seconds to ensure that the replica is ready to receive the command
-        #         # and the REPLCONF GETACK command is not concatenated with the RDB file.
-        #         time.sleep(2)
-        #         print(f"[{self.role}] Sending REPLCONF GETACK to replica in PSYNC..")
-        #         self._send_replconf_getack(replica_socket)
-        #         print(
-        #             f"[{self.role}] Sent REPLCONF GETACK to replica at port {port} in PSYNC"
-        #         )
-
-    def _send_replconf_getack(self, replica_socket):
+    def _send_replconf_getack(self, replica_socket: socket.socket) -> bool:
         """
-        Sends REPLCONF GETACK to a replica and processes the response.
+        Send a REPLCONF GETACK command to a replica and wait for its response.
+
+        This method sends a REPLCONF GETACK command to the specified replica socket,
+        waits for the response, and checks if it's a valid REPLCONF ACK.
 
         Args:
             replica_socket (socket.socket): The socket connected to the replica.
 
         Returns:
-            bool: True if the replica acknowledged, False otherwise.
+            bool: True if a valid ACK is received, False otherwise.
+
+        Raises:
+            Exception: If there's an error in communication with the replica.
         """
         try:
+            print(f"[{self.role}] Sending REPLCONF GETACK to replica..")
             replica_socket.sendall(
                 b"*3\r\n$8\r\nREPLCONF\r\n$6\r\nGETACK\r\n$1\r\n*\r\n"
             )
             print(f"[{self.role}] Sent REPLCONF GETACK to replica")
+
+            print(f"[{self.role}] Waiting for response from replica..")
             response = replica_socket.recv(MAX_BYTES_TO_RECEIVE).decode("utf-8")
             print(f"[{self.role}] Received response from replica: {response}")
-            return "REPLCONF ACK" in response
+
+            if response.startswith("*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n"):
+                return True
+            else:
+                print(f"[{self.role}] Unexpected response from replica: {response}")
+                return False
         except Exception as e:
-            print(f"Error communicating with replica: {e}")
+            print(f"[{self.role}] Error communicating with replica: {e}")
             return False
 
     def _handle_wait(self, cmd_list) -> bytes:
@@ -432,34 +436,37 @@ class Parser:
         Returns:
             bytes: The response containing the number of replicas that acknowledged the command.
         """
-        num_replicas, timeout = int(cmd_list[PARAM_IDX]), int(cmd_list[PARAM_ARG_IDX])
-        timeout_ms = timeout / 1000  # Convert milliseconds to seconds
-        start_time = time.time()
-        acknowledged_replicas = 0
-
+        num_replicas = int(cmd_list[PARAM_IDX])
+        timeout = (
+            float(cmd_list[PARAM_ARG_IDX]) / SECONDS_TO_MS
+        )  # Convert milliseconds to seconds
         print(
-            f"[MASTER] WAIT command received. Waiting for {num_replicas} replicas with timeout {timeout_ms} seconds"
+            f"[{self.role}] WAIT command received. Waiting for {num_replicas} replicas with timeout {timeout} seconds"
         )
 
-        while (
-            time.time() - start_time < timeout_ms
-            and acknowledged_replicas < num_replicas
-        ):
-            for replica_socket, _ in self.REPLICA_SOCKETS:
-                if self._send_replconf_getack(replica_socket):
-                    acknowledged_replicas += 1
-                    print(
-                        f"[MASTER] Replica acknowledged. Total: {acknowledged_replicas}"
-                    )
-                    if acknowledged_replicas >= num_replicas:
-                        break
+        start_time = time.time()
+        acks = 0
 
-            if acknowledged_replicas < num_replicas:
-                time.sleep(0.01)  # Short sleep to avoid busy waiting
+        for replica_socket, _ in self.REPLICA_SOCKETS:
+            print(f"[{self.role}] Sending GETACK to replica: {replica_socket}")
+            if self._send_replconf_getack(replica_socket):
+                acks += 1
+                print(f"[{self.role}] Received ACK from replica. Total ACKs: {acks}")
+                if acks >= num_replicas:
+                    print(f"[{self.role}] Received enough ACKs. Breaking loop.")
+                    break
+            else:
+                print(
+                    f"[{self.role}] Failed to receive ACK from replica: {replica_socket}"
+                )
 
-        result = f":{acknowledged_replicas}\r\n".encode("utf-8")
-        print(f"[MASTER] WAIT command completed. Returning: {result}")
-        return result
+            if time.time() - start_time > timeout:
+                print(f"[{self.role}] Timeout reached. Breaking loop.")
+                break
+
+        response = f":{acks}\r\n".encode("utf-8")
+        print(f"[{self.role}] WAIT command completed. Returning: {response}")
+        return response
 
 
 def process_request(client_socket, _client_addr, args):
@@ -474,6 +481,7 @@ def process_request(client_socket, _client_addr, args):
     Returns:
         None
     """
+    role = "REPLICA" if args.replicaof else "MASTER"
     try:
         while True:
             recv_bytes = client_socket.recv(MAX_BYTES_TO_RECEIVE)
@@ -486,7 +494,7 @@ def process_request(client_socket, _client_addr, args):
     except socket.error as ex:
         print(f"Socket error: {ex}")
     finally:
-        print("Closing client socket")
+        print(f"[{role}] Closing client socket: {client_socket}")
         client_socket.close()
 
 
@@ -653,7 +661,7 @@ class ReplicationHandshake:
             print(f"Failed to connect to master in PSYNC: {e}")
         finally:
             print("Closing master socket in perform_psync_handshake...")
-            # master_socket.close()
+            master_socket.close()
 
     def handle_master_commands(
         self, master_socket: socket.socket, first_response: Optional[bytes] = None
