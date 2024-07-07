@@ -481,11 +481,17 @@ class Parser:
         """
         config_key = cmd_list[PARAM_IDX]
         value = cmd_list[PARAM_ARG_IDX]
-        print(f"[{self.role}] CONFIG command received. Key: {config_key} and value: {value}")
+        print(
+            f"[{self.role}] CONFIG command received. Key: {config_key} and value: {value}"
+        )
         if config_key == "GET" and value == "dir":
-            return f"*2\r\n$3\r\ndir\r\n${len(self.args.dir)}\r\n{self.args.dir}\r\n".encode('utf-8')
+            return f"*2\r\n$3\r\ndir\r\n${len(self.args.dir)}\r\n{self.args.dir}\r\n".encode(
+                "utf-8"
+            )
         elif config_key == "GET" and value == "dbfilename":
-            return f"*2\r\n$10\r\ndbfilename\r\n${len(self.args.dbfilename)}\r\n{self.args.dbfilename}\r\n".encode('utf-8')
+            return f"*2\r\n$10\r\ndbfilename\r\n${len(self.args.dbfilename)}\r\n{self.args.dbfilename}\r\n".encode(
+                "utf-8"
+            )
         else:
             raise Exception(f"Unknown CONFIG command: {config_key}")
 
@@ -753,13 +759,10 @@ def main():
         "-d",
         "--dir",
         help="Path to the directory where RDB file is stored",
-        default="/tmp/redis-data"
+        default="/tmp/redis-data",
     )
     parser.add_argument(
-        "-f",
-        "--dbfilename",
-        help="Name of the RDB file",
-        default="dump.rdb"
+        "-f", "--dbfilename", help="Name of the RDB file", default="dump.rdb"
     )
     args = parser.parse_args()
     server_socket = socket.create_server(("localhost", args.port), reuse_port=True)
