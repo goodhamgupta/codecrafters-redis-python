@@ -137,6 +137,7 @@ class Parser:
                 "REPLCONF": self._handle_replconf,
                 "PSYNC": self._handle_psync,
                 "WAIT": self._handle_wait,
+                "CONFIG": self._handle_config,
             }
             last_result = None
 
@@ -468,6 +469,26 @@ class Parser:
         print(f"[{self.role}] WAIT command completed. Returning: {response}")
         return response
 
+    def _handle_config(self, cmd_list) -> bytes:
+        """
+        Handles the CONFIG command.
+
+        Args:
+            cmd_list (list): The list of command arguments.
+
+        Returns:
+            bytes: The response containing the configuration value.
+        """
+        config_key = cmd_list[PARAM_IDX]
+        value = cmd_list[PARAM_ARG_IDX]
+        print(f"[{self.role}] CONFIG command received. Key: {config_key} and value: {value}")
+        if config_key == "GET" and value == "dir":
+            return f"*2\r\n$3\r\ndir\r\n${len(self.args.dir)}\r\n{self.args.dir}\r\n".encode('utf-8')
+        elif config_key == "GET" and value == "dbfilename":
+            return f"*2\r\n$10\r\ndbfilename\r\n${len(self.args.dbfilename)}\r\n{self.args.dbfilename}\r\n".encode('utf-8')
+        else:
+            raise Exception(f"Unknown CONFIG command: {config_key}")
+
 
 def process_request(client_socket, _client_addr, args):
     """
@@ -727,6 +748,18 @@ def main():
         "--replicaof",
         help="Address of Redis master server. Current server will be the replica of the master",
         default=None,
+    )
+    parser.add_argument(
+        "-d",
+        "--dir",
+        help="Path to the directory where RDB file is stored",
+        default="/tmp/redis-data"
+    )
+    parser.add_argument(
+        "-f",
+        "--dbfilename",
+        help="Name of the RDB file",
+        default="dump.rdb"
     )
     args = parser.parse_args()
     server_socket = socket.create_server(("localhost", args.port), reuse_port=True)
