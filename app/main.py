@@ -58,10 +58,11 @@ class Parser:
         self.client_port = client_socket.getsockname()[1]
         self.args = args
         self.role = "REPLICA" if self.args.replicaof else "MASTER"
-        self.restored_kv_pairs = restored_kv_pairs
 
-        for key, value in self.restored_kv_pairs:
-            self.REDIS_DB[key] = value
+        if restored_kv_pairs:
+            print(f"[{self.role}] Restoring key-value pairs from RDB dump")
+            for key, value in restored_kv_pairs:
+                self.REDIS_DB[key] = value
 
     def _extract_content(
         self, cmd_list: List[str], content_len_idx: int, content_idx: int
@@ -514,6 +515,8 @@ class Parser:
             bytes: The response containing the keys.
         """
         keys = list(self.REDIS_DB.keys())
+        if len(keys) == 0:
+            return b"*0\r\n"
         resp_array = f"*{len(keys)}\r\n" + "".join([f"${len(key)}\r\n{key}\r\n" for key in keys])
         return resp_array.encode("utf-8")
 
@@ -760,7 +763,7 @@ class RDBFileParser:
     FILE_VERSION_SLICE = slice(5, 9)
     METADATA_START_SLICE = slice(9, 10)
     METADATA_REDIS_VERSION_NAME_SLICE = slice(11, 20)
-    METADATA_REDIS_VERSION_VAL_SLICE = slice(21, 27)
+    METADATA_REDIS_VERSION_VAL_SLICE = slice(21, 26)
 
     DATABASE_START_SLICE = slice(28, 29)
     DATABASE_SIZE_SLICE = slice(30, 31)
@@ -783,9 +786,13 @@ class RDBFileParser:
         self.args = args
 
     def _read_file(self):
-        if Path(self.args.dbfilename).exists():
-            with open(self.args.dbfilename, "rb") as f:
-                return f.read()
+        dbpath = Path(self.args.dir) / self.args.dbfilename
+        if (dbpath).exists():
+            with dbpath.open("rb") as infile:
+                return infile.read()
+        else:
+            print("RDB file not found.")
+            return None
 
     def _verify_header(self, data):
         """
@@ -802,9 +809,9 @@ class RDBFileParser:
         """
         if data[self.MAGIC_NUMBER_SLICE] != b"REDIS":
             raise Exception("Invalid RDB file header")
-        if data[self.FILE_VERSION_SLICE] != b"0009":
-            print("Remebmer to change this to 0007. This is for testing purposes.")
-            raise Exception(f"Invalid RDB version. Expected 0007. Received: {data[5:9]}")
+        if data[self.FILE_VERSION_SLICE] != b"0003":
+            print("Remember to change this to 0009 for testing purposes.")
+            raise Exception(f"Invalid RDB version. Expected 0003. Received: {data[5:9]}")
 
     def _verify_metadata(self, data):
         """
@@ -825,8 +832,8 @@ class RDBFileParser:
         if data[self.METADATA_REDIS_VERSION_NAME_SLICE] != b"redis-ver":
             raise Exception(f"Invalid Redis version in metadata. Expected 'redis-ver'. Received: {data[self.METADATA_REDIS_VERSION_NAME_SLICE]}")
 
-        if data[self.METADATA_REDIS_VERSION_VAL_SLICE] != b"6.2.14":
-            raise Exception(f"Invalid Redis version in metadata. Expected '6.2.14'. Received: {data[self.METADATA_REDIS_VERSION_VAL_SLICE]}")
+        if data[self.METADATA_REDIS_VERSION_VAL_SLICE] != b"7.2.0":
+            raise Exception(f"Invalid Redis version in metadata. Expected '7.2.0'. Received: {data[self.METADATA_REDIS_VERSION_VAL_SLICE]}")
 
     def _verify_db_selector(self, data) -> int:
         """
@@ -882,11 +889,12 @@ class RDBFileParser:
 
     def parse(self):
         data = self._read_file()
-        self._verify_header(data)
-        self._verify_metadata(data)
-        kv_start_idx = self._verify_db_selector(data)
-        kv_pairs = self._extract_kv_pairs(data, kv_start_idx)
-        return kv_pairs
+        if data:
+            self._verify_header(data)
+            self._verify_metadata(data)
+            kv_start_idx = self._verify_db_selector(data)
+            kv_pairs = self._extract_kv_pairs(data, kv_start_idx)
+            return kv_pairs
 
 
 def main():
