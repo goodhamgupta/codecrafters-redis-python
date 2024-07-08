@@ -4,6 +4,8 @@ from typing import Tuple, Optional, List
 import time
 import argparse
 from argparse import Namespace
+from pathlib import Path
+import struct
 
 
 MAX_BYTES_TO_RECEIVE = 1024
@@ -41,6 +43,7 @@ class Parser:
         cmd_list: List[str],
         cmd_bytes: bytes,
         args: Namespace,
+        restored_kv_pairs: List[Tuple]
     ):
         """
         Initializes the Parser instance.
@@ -55,6 +58,10 @@ class Parser:
         self.client_port = client_socket.getsockname()[1]
         self.args = args
         self.role = "REPLICA" if self.args.replicaof else "MASTER"
+        self.restored_kv_pairs = restored_kv_pairs
+
+        for key, value in self.restored_kv_pairs:
+            self.REDIS_DB[key] = value
 
     def _extract_content(
         self, cmd_list: List[str], content_len_idx: int, content_idx: int
@@ -138,6 +145,7 @@ class Parser:
                 "PSYNC": self._handle_psync,
                 "WAIT": self._handle_wait,
                 "CONFIG": self._handle_config,
+                "KEYS": self._handle_keys,
             }
             last_result = None
 
@@ -495,8 +503,21 @@ class Parser:
         else:
             raise Exception(f"Unknown CONFIG command: {config_key}")
 
+    def _handle_keys(self, cmd_list) -> bytes:
+        """
+        Handles the KEYS command.
 
-def process_request(client_socket, _client_addr, args):
+        Args:
+            cmd_list (list): The list of command arguments.
+
+        Returns:
+            bytes: The response containing the keys.
+        """
+        keys = list(self.REDIS_DB.keys())
+        resp_array = f"*{len(keys)}\r\n" + "".join([f"${len(key)}\r\n{key}\r\n" for key in keys])
+        return resp_array.encode("utf-8")
+
+def process_request(client_socket, _client_addr, args, restored_kv_pairs):
     """
     Processes the request from a client. It continuously receives data from the client
     and sends a response until the client socket is closed.
@@ -517,7 +538,7 @@ def process_request(client_socket, _client_addr, args):
             data = recv_bytes.decode("utf-8")
             cmd_list = data.split("\r\n")
             print("In process request, received command: ", cmd_list)
-            Parser(client_socket, cmd_list, recv_bytes, args).parse_command()
+            Parser(client_socket, cmd_list, recv_bytes, args, restored_kv_pairs).parse_command()
     except socket.error as ex:
         print(f"Socket error: {ex}")
     finally:
@@ -733,6 +754,141 @@ class ReplicationHandshake:
         master_socket.close()
 
 
+class RDBFileParser:
+
+    MAGIC_NUMBER_SLICE = slice(0, 5)
+    FILE_VERSION_SLICE = slice(5, 9)
+    METADATA_START_SLICE = slice(9, 10)
+    METADATA_REDIS_VERSION_NAME_SLICE = slice(11, 20)
+    METADATA_REDIS_VERSION_VAL_SLICE = slice(21, 27)
+
+    DATABASE_START_SLICE = slice(28, 29)
+    DATABASE_SIZE_SLICE = slice(30, 31)
+
+    OP_CODE_AUX = b"\xFA"
+    OP_CODE_RESIZEDB = b"\xFB"
+    OP_CODE_EXPIRETIMEMS = b"\xFC"
+    OP_CODE_EXPIRETIME = b"\xFD"
+    OP_CODE_SELECTDB = b"\xFE"
+    OP_CODE_EOF = b"\xFF"
+
+    LENGTH_ENCODING_MAPPING = {
+        b"\x00": 6,
+        b"\x01": 14,
+        b"\x10": 32, # FIXME: Instruction -> Discard the remaining 6 bits. The next 4 bytes from the stream represent the length
+        b"\x11": 64  # FIXME: Instruction -> The next object is encoded in a special format. The remaining 6 bits indicate the format. May be used to store numbers or String
+    }
+
+    def __init__(self, args):
+        self.args = args
+
+    def _read_file(self):
+        if Path(self.args.dbfilename).exists():
+            with open(self.args.dbfilename, "rb") as f:
+                return f.read()
+
+    def _verify_header(self, data):
+        """
+        Verifies the header of the RDB file data.
+
+        This method checks if the initial bytes of the provided data match the expected
+        Redis RDB file header. If the header is invalid, it raises an exception.
+
+        Args:
+            data (bytes): The binary data of the RDB file.
+
+        Raises:
+            Exception: If the RDB file header is invalid.
+        """
+        if data[self.MAGIC_NUMBER_SLICE] != b"REDIS":
+            raise Exception("Invalid RDB file header")
+        if data[self.FILE_VERSION_SLICE] != b"0009":
+            print("Remebmer to change this to 0007. This is for testing purposes.")
+            raise Exception(f"Invalid RDB version. Expected 0007. Received: {data[5:9]}")
+
+    def _verify_metadata(self, data):
+        """
+        Verifies the metadata section of the RDB file data.
+
+        This method checks if the metadata section of the provided data starts with the expected
+        Redis RDB file auxiliary opcode. If the metadata header is invalid, it raises an exception.
+
+        Args:
+            data (bytes): The binary data of the RDB file.
+
+        Raises:
+            Exception: If the metadata header is invalid.
+        """
+        if data[self.METADATA_START_SLICE] != self.OP_CODE_AUX:
+            raise Exception(f"Invalid metadata header. Expected {self.OP_CODE_AUX}. Received: {data[self.METADATA_START_SLICE]}")
+
+        if data[self.METADATA_REDIS_VERSION_NAME_SLICE] != b"redis-ver":
+            raise Exception(f"Invalid Redis version in metadata. Expected 'redis-ver'. Received: {data[self.METADATA_REDIS_VERSION_NAME_SLICE]}")
+
+        if data[self.METADATA_REDIS_VERSION_VAL_SLICE] != b"6.2.14":
+            raise Exception(f"Invalid Redis version in metadata. Expected '6.2.14'. Received: {data[self.METADATA_REDIS_VERSION_VAL_SLICE]}")
+
+    def _verify_db_selector(self, data) -> int:
+        """
+        Extracts the database information from the RDB file data.
+
+        This method locates the SELECTDB opcode in the provided data, verifies the presence
+        of the RESIZEDB opcode, and extracts the sizes of the hash table and the expire hash table.
+
+        Args:
+            data (bytes): The binary data of the RDB file.
+
+        Returns:
+            int: The index in the data after processing the hash table and expire hash table sizes.
+
+        Raises:
+            Exception: If the SELECTDB or RESIZEDB opcodes are not found in the data.
+        """
+        db_start_idx = data.find(self.OP_CODE_SELECTDB)
+        if db_start_idx == -1:
+            raise Exception(f"Expected SELECTDB opcode not found in the RDB file.")
+        db_size_slice = slice(db_start_idx + 1, db_start_idx + 2)
+        bits_to_read = self.LENGTH_ENCODING_MAPPING.get(data[db_size_slice])
+        # FIXME: Assuming the number of bits to read is always, for now. Remove this assumption later.
+        hash_table_info_slice = slice(db_start_idx + 2, db_start_idx + 3)
+        if data[hash_table_info_slice] != self.OP_CODE_RESIZEDB:
+            raise Exception(
+                f"Expected RESIZEDB opcode not found in the RDB file. Expected {self.OP_CODE_RESIZEDB}. Received: {data[hash_table_info_slice]}"
+            )
+        hash_table_size_slice = slice(db_start_idx + 3, db_start_idx + 4)
+        print("Size of hash table: ", data[hash_table_size_slice])
+        expire_hash_table_size_slice = slice(db_start_idx + 4, db_start_idx + 5)
+        print("Size of expire hash table: ", data[expire_hash_table_size_slice])
+        return db_start_idx + 5
+
+    def _extract_kv_pairs(self, data, kv_start_idx):
+        print(data)
+        if data[slice(kv_start_idx, kv_start_idx + 1)] != b"\x00":
+            raise Exception(
+                f"Expected flag for key-value pair not found in the RDB file. Expected b'\x00'. Received: {data[slice(kv_start_idx, kv_start_idx + 1)]}"
+            )
+        kv_pairs = []
+        data_start_idx = kv_start_idx + 1
+        counter = 0
+        (key_size, ) = struct.unpack('B', data[slice(data_start_idx + counter, data_start_idx + counter + 1)])
+        key = data[slice(data_start_idx + counter + 1, data_start_idx + counter + 1 + key_size)]
+        # (value_size, ) = struct.unpack('B', data[slice(data_start_idx + counter + 1 + key_size, data_start_idx + counter + 1 + key_size + 1)])
+        # value = data[slice(data_start_idx + counter + 1 + key_size + 1, data_start_idx + counter + 1 + key_size + 1 + value_size)]
+        print("Key: ", key)
+        # print("Value size: ", value_size)
+        # print("Value: ", value)
+        kv_pairs.append((key.decode('utf-8'), None))
+        return kv_pairs
+
+    def parse(self):
+        data = self._read_file()
+        self._verify_header(data)
+        self._verify_metadata(data)
+        kv_start_idx = self._verify_db_selector(data)
+        kv_pairs = self._extract_kv_pairs(data, kv_start_idx)
+        return kv_pairs
+
+
 def main():
     """
     The main function of the server. It creates a server socket, listens for incoming connections,
@@ -765,6 +921,7 @@ def main():
         "-f", "--dbfilename", help="Name of the RDB file", default="dump.rdb"
     )
     args = parser.parse_args()
+    restored_kv_pairs = RDBFileParser(args).parse()
     server_socket = socket.create_server(("localhost", args.port), reuse_port=True)
     print(f"Listening on port {args.port}..")
     server_socket.listen(MAX_NUM_UNACCEPTED_CONN)
@@ -773,7 +930,7 @@ def main():
         Thread(target=ReplicationHandshake(args).perform_handshake).start()
     while True:
         (client_socket, _client_add) = server_socket.accept()
-        Thread(target=process_request, args=(client_socket, _client_add, args)).start()
+        Thread(target=process_request, args=(client_socket, _client_add, args, restored_kv_pairs)).start()
 
 
 if __name__ == "__main__":
