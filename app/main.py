@@ -62,7 +62,7 @@ class Parser:
         if restored_kv_pairs:
             print(f"[{self.role}] Restoring key-value pairs from RDB dump")
             for key, value in restored_kv_pairs:
-                self.REDIS_DB[key] = value
+                self.REDIS_DB[key] = {"value": value}
 
     def _extract_content(
         self, cmd_list: List[str], content_len_idx: int, content_idx: int
@@ -762,8 +762,6 @@ class RDBFileParser:
     MAGIC_NUMBER_SLICE = slice(0, 5)
     FILE_VERSION_SLICE = slice(5, 9)
     METADATA_START_SLICE = slice(9, 10)
-    METADATA_REDIS_VERSION_NAME_SLICE = slice(11, 20)
-    METADATA_REDIS_VERSION_VAL_SLICE = slice(21, 26)
 
     DATABASE_START_SLICE = slice(28, 29)
     DATABASE_SIZE_SLICE = slice(30, 31)
@@ -784,6 +782,7 @@ class RDBFileParser:
 
     def __init__(self, args):
         self.args = args
+        self.role = "REPLICA" if args.replicaof else "MASTER"
 
     def _read_file(self):
         dbpath = Path(self.args.dir) / self.args.dbfilename
@@ -809,9 +808,7 @@ class RDBFileParser:
         """
         if data[self.MAGIC_NUMBER_SLICE] != b"REDIS":
             raise Exception("Invalid RDB file header")
-        if data[self.FILE_VERSION_SLICE] != b"0003":
-            print("Remember to change this to 0009 for testing purposes.")
-            raise Exception(f"Invalid RDB version. Expected 0003. Received: {data[5:9]}")
+        print(f"[{self.role}] Redis File Version: ", data[self.FILE_VERSION_SLICE])
 
     def _verify_metadata(self, data):
         """
@@ -829,11 +826,15 @@ class RDBFileParser:
         if data[self.METADATA_START_SLICE] != self.OP_CODE_AUX:
             raise Exception(f"Invalid metadata header. Expected {self.OP_CODE_AUX}. Received: {data[self.METADATA_START_SLICE]}")
 
-        if data[self.METADATA_REDIS_VERSION_NAME_SLICE] != b"redis-ver":
-            raise Exception(f"Invalid Redis version in metadata. Expected 'redis-ver'. Received: {data[self.METADATA_REDIS_VERSION_NAME_SLICE]}")
+        metadata_version_name_size_slice = slice(10, 11)
+        (name_num_bits, ) = struct.unpack_from("B", data[metadata_version_name_size_slice])
+        metadata_version_name_slice = slice(11, 11 + name_num_bits)
+        print(f"[{self.role}] Metadata Redis Version name: ", data[metadata_version_name_slice])
 
-        if data[self.METADATA_REDIS_VERSION_VAL_SLICE] != b"7.2.0":
-            raise Exception(f"Invalid Redis version in metadata. Expected '7.2.0'. Received: {data[self.METADATA_REDIS_VERSION_VAL_SLICE]}")
+        (version_num_bits, ) = struct.unpack_from("B", data[11 + name_num_bits: 12 + name_num_bits])
+        metadata_version_val_slice = slice(12 + name_num_bits, 12 + name_num_bits + version_num_bits)
+        print(f"[{self.role}] Metadata Redis Version value: ", data[metadata_version_val_slice])
+
 
     def _verify_db_selector(self, data) -> int:
         """
@@ -863,9 +864,9 @@ class RDBFileParser:
                 f"Expected RESIZEDB opcode not found in the RDB file. Expected {self.OP_CODE_RESIZEDB}. Received: {data[hash_table_info_slice]}"
             )
         hash_table_size_slice = slice(db_start_idx + 3, db_start_idx + 4)
-        print("Size of hash table: ", data[hash_table_size_slice])
+        print(f"[{self.role}] Size of hash table: ", data[hash_table_size_slice])
         expire_hash_table_size_slice = slice(db_start_idx + 4, db_start_idx + 5)
-        print("Size of expire hash table: ", data[expire_hash_table_size_slice])
+        print(f"[{self.role}] Size of expire hash table: ", data[expire_hash_table_size_slice])
         return db_start_idx + 5
 
     def _extract_kv_pairs(self, data, kv_start_idx):
@@ -876,15 +877,14 @@ class RDBFileParser:
             )
         kv_pairs = []
         data_start_idx = kv_start_idx + 1
-        counter = 0
-        (key_size, ) = struct.unpack('B', data[slice(data_start_idx + counter, data_start_idx + counter + 1)])
-        key = data[slice(data_start_idx + counter + 1, data_start_idx + counter + 1 + key_size)]
-        # (value_size, ) = struct.unpack('B', data[slice(data_start_idx + counter + 1 + key_size, data_start_idx + counter + 1 + key_size + 1)])
-        # value = data[slice(data_start_idx + counter + 1 + key_size + 1, data_start_idx + counter + 1 + key_size + 1 + value_size)]
+        (key_size, ) = struct.unpack('B', data[slice(data_start_idx, data_start_idx + 1)])
+        key = data[slice(data_start_idx + 1, data_start_idx + 1 + key_size)]
+        (value_size, ) = struct.unpack('B', data[slice(data_start_idx + 1 + key_size, data_start_idx + 1 + key_size + 1)])
+        value = data[slice(data_start_idx + 1 + key_size + 1, data_start_idx + 1 + key_size + 1 + value_size)]
         print("Key: ", key)
-        # print("Value size: ", value_size)
-        # print("Value: ", value)
-        kv_pairs.append((key.decode('utf-8'), None))
+        print("Value size: ", value_size)
+        print("Value: ", value)
+        kv_pairs.append((key.decode('utf-8'), value.decode('utf-8')))
         return kv_pairs
 
     def parse(self):
