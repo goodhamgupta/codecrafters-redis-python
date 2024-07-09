@@ -563,6 +563,8 @@ class Parser:
         key = cmd_list[PARAM_IDX]
         print(f"[{self.role}] TYPE command received. Key: {key}")
         if key in self.REDIS_DB:
+            if "-" in key:
+                return b"+stream\r\n"
             value = self.REDIS_DB[key]["value"]
             if isinstance(value, str):
                 return b"+string\r\n"
