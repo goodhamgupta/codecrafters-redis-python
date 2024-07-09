@@ -29,6 +29,7 @@ NUM_BYTES_RECEIVED_SO_FAR = 0
 class Parser:
     MASTER_PORT = 6379
     REDIS_DB = {}
+    STREAM_DB = {}
 
     REPLICATION_ID = "8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb"
     REPLICATION_OFFSET = 0
@@ -564,12 +565,12 @@ class Parser:
         print(f"[{self.role}] TYPE command received. Key: {key}")
         if key in self.REDIS_DB:
             value = self.REDIS_DB[key]["value"]
-            if "-" in value:
-                return b"+stream\r\n"
             if isinstance(value, str):
                 return b"+string\r\n"
             else:
                 raise Exception(f"Unsupported value type: {type(value)}")
+        elif key in self.STREAM_DB:
+            return b"+stream\r\n"
         else:
             return b"+none\r\n"
 
@@ -596,7 +597,22 @@ class Parser:
             print(
                 f"[{self.role}] XADD command received. Key: {stream_key} and ID: {stream_id}"
             )
-            self.REDIS_DB[stream_key] = {"value": stream_id}
+            value = self.STREAM_DB.get(stream_key, [])
+            if len(value) > 0:
+                # Validate if current stream ID is greater than the last stream ID
+                last_stream = value[-1]
+                [ms_time, seq_num] = [int(x) for x in last_stream["stream_id"].split("-")]
+                [candidate_ms_time, candidate_seq_num] = [int(x) for x in stream_id.split("-")]
+                if candidate_ms_time == 0 and candidate_seq_num == 0:
+                    return b"-ERR The ID specified in XADD must be greater than 0-0\r\n"
+                if (candidate_ms_time == ms_time and candidate_seq_num > seq_num) or (candidate_seq_num > ms_time and candidate_ms_time > ms_time):
+                    print(f"[{self.role}] Stream ID is valid. Adding to stream.")
+                    value.append({"stream_id": stream_id})
+                else:
+                    return b"-ERR The ID specified in XADD is equal or smaller than the target stream top item\r\n"
+            else:
+                value.append({"stream_id": stream_id})
+            self.STREAM_DB[stream_key] = value
             return f"${len(stream_id)}\r\n{stream_id}\r\n".encode("utf-8")
         else:
             raise Exception("Stream ID not provided for XADD command")
