@@ -60,12 +60,30 @@ class Parser:
         self.role = "REPLICA" if self.args.replicaof else "MASTER"
 
         if restored_kv_pairs:
-            print(f"[{self.role}] Restoring key-value pairs from RDB dump")
+            current_time = time.time() * SECONDS_TO_MS
+            print(
+                f"[{self.role}] Restoring key-value pairs from RDB dump. Current time: {current_time}"
+            )
+
             for ckey, cvalue, cttl in restored_kv_pairs:
+                print(f"[{self.role}] Restoring key: {ckey} with value: {cvalue}")
+
                 if len(ckey) > 0:
-                    self.REDIS_DB[ckey] = {"value": cvalue}
-                if cttl:
-                    self.REDIS_DB[ckey].update({"TTL": cttl})
+                    if cttl:
+                        if current_time > cttl:
+                            print(
+                                f"[{self.role}] TTL expired for key: {ckey} and value: {cvalue}. TTL: {cttl} Current time: {current_time}"
+                            )
+                            continue
+                        else:
+                            print(
+                                f"[{self.role}] Restoring key: {ckey} with value: {cvalue} and TTL: {cttl}"
+                            )
+                            self.REDIS_DB.setdefault(ckey, {}).update(
+                                {"value": cvalue, "TTL": cttl}
+                            )
+                    else:
+                        self.REDIS_DB.setdefault(ckey, {}).update({"value": cvalue})
 
     def _extract_content(
         self, cmd_list: List[str], content_len_idx: int, content_idx: int
@@ -292,8 +310,9 @@ class Parser:
         _key_len, key_content = self._extract_content(
             cmd_list, PARAM_LEN_IDX, PARAM_IDX
         )
+        current_time = time.time() * SECONDS_TO_MS
         print(
-            f"[{self.role}] IN GET COMMAND, cur client: {self.client_socket} current DB: {self.REDIS_DB}"
+            f"[{self.role}] IN GET COMMAND, cur client: {self.client_socket} current DB: {self.REDIS_DB} Current time: {current_time}"
         )
         value_struct = self.REDIS_DB.get(key_content, None)
         if value_struct is None:
@@ -951,60 +970,46 @@ class RDBFileParser:
         kv_pairs = []
         idx = kv_start_idx
         while idx < len(data):
-            if data[idx] == 0xFF:  # End of RDB file
+            if data[slice(idx, idx + 1)] == self.OPCODE_EOF:  # End of RDB file
+                print(f"[{self.role}] EOF found. Breaking..")
                 break
 
             expiry = None
-            if data[idx] == 0xFD:  # EXPIRETIME_MS
+            if data[slice(idx, idx + 1)] == self.OPCODE_EXPIRETIMEMS:
                 idx += 1
-                expiry = struct.unpack(">Q", data[idx : idx + 8])[0]
+                expiry = struct.unpack("<Q", data[idx : idx + 8])[
+                    0
+                ]  # Already in milliseconds
                 idx += 8
-            elif data[idx] == 0xFC:  # EXPIRETIME
+            elif data[slice(idx, idx + 1)] == self.OPCODE_EXPIRETIME:
                 idx += 1
                 expiry = (
-                    struct.unpack(">I", data[idx : idx + 4])[0] * 1000
-                )  # Convert to milliseconds
+                    struct.unpack("<I", data[idx : idx + 4])[0] * 1000
+                )  # Convert seconds to milliseconds
                 idx += 4
+            else:
+                print(f"[{self.role}] No expiry found..")
 
-            value_type = data[idx]
+            value_type = data[slice(idx, idx + 1)]
             idx += 1
 
             key_size, idx = self._read_length(data, idx)
             key = data[idx : idx + key_size].decode("utf-8")
             idx += key_size
+            print(f"[{self.role}] Key: {key} Key size: {key_size}")
 
-            if value_type == 0:  # String encoding
+            if value_type == b"\x00":  # String encoding
                 value_size, idx = self._read_length(data, idx)
-                value = data[idx : idx + value_size].decode("utf-8")
+                value = data[idx : idx + value_size].decode("utf-8", errors="ignore")
                 idx += value_size
             elif value_type in range(1, 14):  # List encoding
                 # Implement list handling if needed
                 raise Exception("Encoding not implemented")
-            elif value_type == 0xC0:  # LZF compressed string
-                compressed_size, idx = self._read_length(data, idx)
-                uncompressed_size, idx = self._read_length(data, idx)
-                compressed_data = data[idx : idx + compressed_size]
-                idx += compressed_size
-                try:
-                    import lzf
-
-                    value = lzf.decompress(compressed_data, uncompressed_size).decode(
-                        "utf-8"
-                    )
-                except ImportError:
-                    raise Exception(
-                        "LZF compression support not available. Please install the 'python-lzf' package."
-                    )
-            elif value_type == 0xC7:  # Special value type for Redis 7.2+
-                value_size, idx = self._read_length(data, idx)
-                value = data[idx : idx + value_size].decode("utf-8")
-                idx += value_size
-            elif value_type == 0x7E:  # Handle value type 126 (0x7E)
-                value_size, idx = self._read_length(data, idx)
-                value = data[idx : idx + value_size].decode("utf-8")
-                idx += value_size
             else:
-                raise Exception(f"Unexpected value type: {value_type}")
+                value_size, idx = self._read_length(data, idx)
+                print(f"[{self.role}] Value size: {value_size}")
+                value = data[idx : idx + value_size].decode("utf-8", errors="ignore")
+                idx += value_size
 
             print(f"[{self.role}] Key: {key}, Value: {value}, Expiry: {expiry}")
             if key:  # Only add non-empty keys
