@@ -835,8 +835,7 @@ class RDBFileParser:
         metadata_version_val_slice = slice(12 + name_num_bits, 12 + name_num_bits + version_num_bits)
         print(f"[{self.role}] Metadata Redis Version value: ", data[metadata_version_val_slice])
 
-
-    def _verify_db_selector(self, data) -> int:
+    def _verify_db_selector(self, data) -> Tuple[int, int]:
         """
         Extracts the database information from the RDB file data.
 
@@ -847,7 +846,7 @@ class RDBFileParser:
             data (bytes): The binary data of the RDB file.
 
         Returns:
-            int: The index in the data after processing the hash table and expire hash table sizes.
+            int: Size of the hashtable and the index in the data after processing the hash table and expire hash table sizes.
 
         Raises:
             Exception: If the SELECTDB or RESIZEDB opcodes are not found in the data.
@@ -864,35 +863,71 @@ class RDBFileParser:
                 f"Expected RESIZEDB opcode not found in the RDB file. Expected {self.OP_CODE_RESIZEDB}. Received: {data[hash_table_info_slice]}"
             )
         hash_table_size_slice = slice(db_start_idx + 3, db_start_idx + 4)
-        print(f"[{self.role}] Size of hash table: ", data[hash_table_size_slice])
+        (hash_table_size,) = struct.unpack("B", data[hash_table_size_slice])
+        print(f"[{self.role}] Size of hash table: ", hash_table_size)
         expire_hash_table_size_slice = slice(db_start_idx + 4, db_start_idx + 5)
-        print(f"[{self.role}] Size of expire hash table: ", data[expire_hash_table_size_slice])
+        (expire_hash_table_size,) = struct.unpack("B", data[expire_hash_table_size_slice])
+        print(f"[{self.role}] Size of expire hash table: ", expire_hash_table_size)
         return db_start_idx + 5
 
     def _extract_kv_pairs(self, data, kv_start_idx):
+
+        """
+        Extracts key-value pairs from the RDB file data.
+
+        This method reads the key-value pairs from the provided data starting at the given index.
+        It expects a specific format for the key-value pairs and raises an exception if the format is not met.
+
+        Args:
+            data (bytes): The binary data of the RDB file.
+            kv_start_idx (int): The starting index for reading key-value pairs.
+
+        Returns:
+            List[Tuple[str, str]]: A list of tuples containing the key-value pairs.
+
+        Raises:
+            Exception: If the expected flag for key-value pairs is not found.
+        """
         print(data)
         if data[slice(kv_start_idx, kv_start_idx + 1)] != b"\x00":
             raise Exception(
                 f"Expected flag for key-value pair not found in the RDB file. Expected b'\x00'. Received: {data[slice(kv_start_idx, kv_start_idx + 1)]}"
             )
         kv_pairs = []
-        data_start_idx = kv_start_idx + 1
-        (key_size, ) = struct.unpack('B', data[slice(data_start_idx, data_start_idx + 1)])
-        key = data[slice(data_start_idx + 1, data_start_idx + 1 + key_size)]
-        (value_size, ) = struct.unpack('B', data[slice(data_start_idx + 1 + key_size, data_start_idx + 1 + key_size + 1)])
-        value = data[slice(data_start_idx + 1 + key_size + 1, data_start_idx + 1 + key_size + 1 + value_size)]
-        print("Key: ", key)
-        print("Value size: ", value_size)
-        print("Value: ", value)
-        kv_pairs.append((key.decode('utf-8'), value.decode('utf-8')))
+        while kv_start_idx < len(data):
+            data_start_idx = kv_start_idx
+            if data[data_start_idx:data_start_idx + 1] == self.OP_CODE_EOF:
+                break
+
+            (key_size,) = struct.unpack('B', data[slice(data_start_idx, data_start_idx + 1)])
+            key = data[slice(data_start_idx + 1, data_start_idx + 1 + key_size)]
+            data_start_idx += 1 + key_size
+
+            (value_size,) = struct.unpack('B', data[slice(data_start_idx, data_start_idx + 1)])
+            value = data[slice(data_start_idx + 1, data_start_idx + 1 + value_size)]
+            print(f"[{self.role}] Key: ", key)
+            print(f"[{self.role}] Value size: ", value_size)
+            print(f"[{self.role}] Value: ", value)
+
+            kv_pairs.append((key.decode('utf-8'), value.decode('utf-8')))
+            kv_start_idx = data_start_idx + 1 + value_size
         return kv_pairs
 
     def parse(self):
+        """
+        Parses the RDB file to extract key-value pairs.
+
+        This method reads the RDB file, verifies its header and metadata,
+        extracts the database selector information, and reads the key-value pairs.
+
+        Returns:
+            List[Tuple[str, str]]: A list of tuples containing the key-value pairs.
+        """
         data = self._read_file()
         if data:
             self._verify_header(data)
             self._verify_metadata(data)
-            kv_start_idx = self._verify_db_selector(data)
+             kv_start_idx = self._verify_db_selector(data)
             kv_pairs = self._extract_kv_pairs(data, kv_start_idx)
             return kv_pairs
 
