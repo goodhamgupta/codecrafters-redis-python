@@ -43,7 +43,7 @@ class Parser:
         cmd_list: List[str],
         cmd_bytes: bytes,
         args: Namespace,
-        restored_kv_pairs: List[Tuple]
+        restored_kv_pairs: List[Tuple],
     ):
         """
         Initializes the Parser instance.
@@ -518,8 +518,11 @@ class Parser:
         keys = list(self.REDIS_DB.keys())
         if len(keys) == 0:
             return b"*0\r\n"
-        resp_array = f"*{len(keys)}\r\n" + "".join([f"${len(key)}\r\n{key}\r\n" for key in keys])
+        resp_array = f"*{len(keys)}\r\n" + "".join(
+            [f"${len(key)}\r\n{key}\r\n" for key in keys]
+        )
         return resp_array.encode("utf-8")
+
 
 def process_request(client_socket, _client_addr, args, restored_kv_pairs):
     """
@@ -542,7 +545,9 @@ def process_request(client_socket, _client_addr, args, restored_kv_pairs):
             data = recv_bytes.decode("utf-8")
             cmd_list = data.split("\r\n")
             print("In process request, received command: ", cmd_list)
-            Parser(client_socket, cmd_list, recv_bytes, args, restored_kv_pairs).parse_command()
+            Parser(
+                client_socket, cmd_list, recv_bytes, args, restored_kv_pairs
+            ).parse_command()
     except socket.error as ex:
         print(f"Socket error: {ex}")
     finally:
@@ -759,7 +764,6 @@ class ReplicationHandshake:
 
 
 class RDBFileParser:
-
     MAGIC_NUMBER_SLICE = slice(0, 5)
     FILE_VERSION_SLICE = slice(5, 9)
     METADATA_START_SLICE = slice(9, 10)
@@ -767,18 +771,18 @@ class RDBFileParser:
     DATABASE_START_SLICE = slice(28, 29)
     DATABASE_SIZE_SLICE = slice(30, 31)
 
-    OP_CODE_AUX = b"\xFA"
-    OP_CODE_RESIZEDB = b"\xFB"
-    OP_CODE_EXPIRETIMEMS = b"\xFC"
-    OP_CODE_EXPIRETIME = b"\xFD"
-    OP_CODE_SELECTDB = b"\xFE"
-    OP_CODE_EOF = b"\xFF"
+    OP_CODE_AUX = b"\xfa"
+    OP_CODE_RESIZEDB = b"\xfb"
+    OP_CODE_EXPIRETIMEMS = b"\xfc"
+    OP_CODE_EXPIRETIME = b"\xfd"
+    OP_CODE_SELECTDB = b"\xfe"
+    OP_CODE_EOF = b"\xff"
 
     LENGTH_ENCODING_MAPPING = {
         b"\x00": 6,
         b"\x01": 14,
-        b"\x10": 32, # FIXME: Instruction -> Discard the remaining 6 bits. The next 4 bytes from the stream represent the length
-        b"\x11": 64  # FIXME: Instruction -> The next object is encoded in a special format. The remaining 6 bits indicate the format. May be used to store numbers or String
+        b"\x10": 32,  # FIXME: Instruction -> Discard the remaining 6 bits. The next 4 bytes from the stream represent the length
+        b"\x11": 64,  # FIXME: Instruction -> The next object is encoded in a special format. The remaining 6 bits indicate the format. May be used to store numbers or String
     }
 
     def __init__(self, args):
@@ -825,18 +829,32 @@ class RDBFileParser:
             Exception: If the metadata header is invalid.
         """
         if data[self.METADATA_START_SLICE] != self.OP_CODE_AUX:
-            raise Exception(f"Invalid metadata header. Expected {self.OP_CODE_AUX}. Received: {data[self.METADATA_START_SLICE]}")
+            raise Exception(
+                f"Invalid metadata header. Expected {self.OP_CODE_AUX}. Received: {data[self.METADATA_START_SLICE]}"
+            )
 
         metadata_version_name_size_slice = slice(10, 11)
-        (name_num_bits, ) = struct.unpack_from("B", data[metadata_version_name_size_slice])
+        (name_num_bits,) = struct.unpack_from(
+            "B", data[metadata_version_name_size_slice]
+        )
         metadata_version_name_slice = slice(11, 11 + name_num_bits)
-        print(f"[{self.role}] Metadata Redis Version name: ", data[metadata_version_name_slice])
+        print(
+            f"[{self.role}] Metadata Redis Version name: ",
+            data[metadata_version_name_slice],
+        )
 
-        (version_num_bits, ) = struct.unpack_from("B", data[11 + name_num_bits: 12 + name_num_bits])
-        metadata_version_val_slice = slice(12 + name_num_bits, 12 + name_num_bits + version_num_bits)
-        print(f"[{self.role}] Metadata Redis Version value: ", data[metadata_version_val_slice])
+        (version_num_bits,) = struct.unpack_from(
+            "B", data[11 + name_num_bits : 12 + name_num_bits]
+        )
+        metadata_version_val_slice = slice(
+            12 + name_num_bits, 12 + name_num_bits + version_num_bits
+        )
+        print(
+            f"[{self.role}] Metadata Redis Version value: ",
+            data[metadata_version_val_slice],
+        )
 
-    def _verify_db_selector(self, data) -> Tuple[int, int]:
+    def _verify_db_selector(self, data) -> int:
         """
         Extracts the database information from the RDB file data.
 
@@ -847,32 +865,30 @@ class RDBFileParser:
             data (bytes): The binary data of the RDB file.
 
         Returns:
-            int: Size of the hashtable and the index in the data after processing the hash table and expire hash table sizes.
+            int: The index in the data after processing the database selector information.
 
         Raises:
             Exception: If the SELECTDB or RESIZEDB opcodes are not found in the data.
         """
         db_start_idx = data.find(self.OP_CODE_SELECTDB)
         if db_start_idx == -1:
-            raise Exception(f"Expected SELECTDB opcode not found in the RDB file.")
-        db_size_slice = slice(db_start_idx + 1, db_start_idx + 2)
-        bits_to_read = self.LENGTH_ENCODING_MAPPING.get(data[db_size_slice])
-        # FIXME: Assuming the number of bits to read is always, for now. Remove this assumption later.
+            raise Exception("Expected SELECTDB opcode not found in the RDB file.")
+
         hash_table_info_slice = slice(db_start_idx + 2, db_start_idx + 3)
         if data[hash_table_info_slice] != self.OP_CODE_RESIZEDB:
             raise Exception(
                 f"Expected RESIZEDB opcode not found in the RDB file. Expected {self.OP_CODE_RESIZEDB}. Received: {data[hash_table_info_slice]}"
             )
-        hash_table_size_slice = slice(db_start_idx + 3, db_start_idx + 4)
-        (hash_table_size,) = struct.unpack("B", data[hash_table_size_slice])
+
+        hash_table_size, idx = self._read_length(data, db_start_idx + 3)
         print(f"[{self.role}] Size of hash table: ", hash_table_size)
-        expire_hash_table_size_slice = slice(db_start_idx + 4, db_start_idx + 5)
-        (expire_hash_table_size,) = struct.unpack("B", data[expire_hash_table_size_slice])
+
+        expire_hash_table_size, idx = self._read_length(data, idx)
         print(f"[{self.role}] Size of expire hash table: ", expire_hash_table_size)
-        return db_start_idx + 5
+
+        return idx
 
     def _extract_kv_pairs(self, data, kv_start_idx):
-
         """
         Extracts key-value pairs from the RDB file data.
 
@@ -890,33 +906,56 @@ class RDBFileParser:
             Exception: If the expected flag for key-value pairs is not found.
         """
         print(data)
-        if data[slice(kv_start_idx, kv_start_idx + 1)] != b"\x00":
-            raise Exception(
-                f"Expected flag for key-value pair not found in the RDB file. Expected b'\x00'. Received: {data[slice(kv_start_idx, kv_start_idx + 1)]}"
-            )
         kv_pairs = []
-        while kv_start_idx < len(data):
-            data_start_idx = kv_start_idx
-            if data[data_start_idx:data_start_idx + 1] == self.OP_CODE_EOF:
+        idx = kv_start_idx
+        while idx < len(data):
+            if data[idx] == 0xFF:  # End of RDB file
                 break
+            if data[idx] != 0:  # Not a string encoding
+                raise Exception(f"Unexpected value type: {data[idx]}")
 
-            (key_size,) = struct.unpack('B', data[slice(data_start_idx, data_start_idx + 1)])
-            key = data[slice(data_start_idx + 1, data_start_idx + 1 + key_size)]
-            data_start_idx += 1 + key_size
+            idx += 1
+            key_size, idx = self._read_length(data, idx)
+            key = data[idx : idx + key_size].decode("utf-8")
+            idx += key_size
 
-            (value_size,) = struct.unpack('B', data[slice(data_start_idx, data_start_idx + 1)])
-            value = data[slice(data_start_idx + 1, data_start_idx + 1 + value_size)]
+            value_size, idx = self._read_length(data, idx)
+            value = data[idx : idx + value_size].decode("utf-8")
+            idx += value_size
+
+            print(f"[{self.role}] Key size: ", key_size)
             print(f"[{self.role}] Key: ", key)
             print(f"[{self.role}] Value size: ", value_size)
             print(f"[{self.role}] Value: ", value)
 
-            try:
-                kv_pairs.append((key.decode('utf-8'), value.decode('utf-8')))
-            except Exception as e:
-                print(f"[{self.role}] Error decoding key-value pair: {e}. Storing value as bytes")
-                kv_pairs.append((key.decode('utf-8'), value))
-            kv_start_idx = data_start_idx + 1 + value_size
+            kv_pairs.append((key, value))
+
         return kv_pairs
+
+    def _read_length(self, data, start_idx):
+        """
+        Reads a length-encoded integer from the data.
+
+        Args:
+            data (bytes): The binary data.
+            start_idx (int): The starting index to read from.
+
+        Returns:
+            Tuple[int, int]: The decoded length and the new index after reading.
+        """
+        first_byte = data[start_idx]
+        if first_byte < 0xC0:
+            return first_byte, start_idx + 1
+        elif first_byte < 0xF0:
+            if first_byte == 0xC0:
+                return struct.unpack(">H", data[start_idx + 1 : start_idx + 3])[
+                    0
+                ], start_idx + 3
+            elif first_byte == 0xC1:
+                return struct.unpack(">I", data[start_idx + 1 : start_idx + 5])[
+                    0
+                ], start_idx + 5
+        raise Exception(f"Unsupported length encoding: {first_byte}")
 
     def parse(self):
         """
@@ -978,7 +1017,10 @@ def main():
         Thread(target=ReplicationHandshake(args).perform_handshake).start()
     while True:
         (client_socket, _client_add) = server_socket.accept()
-        Thread(target=process_request, args=(client_socket, _client_add, args, restored_kv_pairs)).start()
+        Thread(
+            target=process_request,
+            args=(client_socket, _client_add, args, restored_kv_pairs),
+        ).start()
 
 
 if __name__ == "__main__":
