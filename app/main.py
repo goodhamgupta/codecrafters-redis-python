@@ -168,6 +168,7 @@ class Parser:
                 "WAIT": self._handle_wait,
                 "CONFIG": self._handle_config,
                 "KEYS": self._handle_keys,
+                "TYPE": self._handle_type,
             }
             last_result = None
 
@@ -526,7 +527,7 @@ class Parser:
         else:
             raise Exception(f"Unknown CONFIG command: {config_key}")
 
-    def _handle_keys(self, cmd_list) -> bytes:
+    def _handle_keys(self, _cmd_list) -> bytes:
         """
         Handles the KEYS command.
 
@@ -543,6 +544,27 @@ class Parser:
             [f"${len(key)}\r\n{key}\r\n" for key in keys]
         )
         return resp_array.encode("utf-8")
+
+    def _handle_type(self, cmd_list) -> bytes:
+        """
+        Handles the TYPE command.
+
+        Args:
+            cmd_list (list): The list of command arguments.
+
+        Returns:
+            bytes: The response containing the type of the key.
+        """
+        key = cmd_list[PARAM_IDX]
+        print(f"[{self.role}] TYPE command received. Key: {key}")
+        if key in self.REDIS_DB:
+            value = self.REDIS_DB[key]["value"]
+            if isinstance(value, str):
+                return b"+string\r\n"
+            else:
+                raise Exception(f"Unsupported value type: {type(value)}")
+        else:
+            return b"+none\r\n"
 
 
 def process_request(client_socket, _client_addr, args, restored_kv_pairs):
