@@ -169,6 +169,7 @@ class Parser:
                 "CONFIG": self._handle_config,
                 "KEYS": self._handle_keys,
                 "TYPE": self._handle_type,
+                "XADD": self._handle_xadd,
             }
             last_result = None
 
@@ -554,6 +555,10 @@ class Parser:
 
         Returns:
             bytes: The response containing the type of the key.
+                   Possible return values:
+                   - b"+string\r\n": If the key exists and its value is a string.
+                   - b"+none\r\n": If the key does not exist in the database.
+                   - Raises an Exception: If the value type is unsupported.
         """
         key = cmd_list[PARAM_IDX]
         print(f"[{self.role}] TYPE command received. Key: {key}")
@@ -565,6 +570,33 @@ class Parser:
                 raise Exception(f"Unsupported value type: {type(value)}")
         else:
             return b"+none\r\n"
+
+    def _handle_xadd(self, cmd_list) -> bytes:
+        """
+        Handles the XADD command for adding new entries to a stream.
+
+        Args:
+            cmd_list (list): The list of command arguments.
+
+        Returns:
+            bytes: The response containing the ID of the added entry.
+
+        Raises:
+            Exception: If the stream ID is not provided.
+        """
+        (_stream_key_len, stream_key) = self._extract_content(
+            cmd_list, PARAM_LEN_IDX, PARAM_IDX
+        )
+        (_stream_id_len, stream_id) = self._extract_content(
+            cmd_list, PARAM_ARG_LEN_IDX, PARAM_ARG_IDX
+        )
+        if stream_id:
+            print(
+                f"[{self.role}] XADD command received. Key: {stream_key} and ID: {stream_id}"
+            )
+            return f"${len(stream_id)}\r\n{stream_id}\r\n".encode("utf-8")
+        else:
+            raise Exception("Stream ID not provided for XADD command")
 
 
 def process_request(client_socket, _client_addr, args, restored_kv_pairs):
