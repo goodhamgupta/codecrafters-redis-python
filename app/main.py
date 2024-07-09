@@ -61,9 +61,11 @@ class Parser:
 
         if restored_kv_pairs:
             print(f"[{self.role}] Restoring key-value pairs from RDB dump")
-            for key, value in restored_kv_pairs:
-                if len(key) > 0:
-                    self.REDIS_DB[key] = {"value": value}
+            for ckey, cvalue, cttl in restored_kv_pairs:
+                if len(ckey) > 0:
+                    self.REDIS_DB[ckey] = {"value": cvalue}
+                if cttl:
+                    self.REDIS_DB[ckey].update({"TTL": cttl})
 
     def _extract_content(
         self, cmd_list: List[str], content_len_idx: int, content_idx: int
@@ -771,12 +773,12 @@ class RDBFileParser:
     DATABASE_START_SLICE = slice(28, 29)
     DATABASE_SIZE_SLICE = slice(30, 31)
 
-    OP_CODE_AUX = b"\xfa"
-    OP_CODE_RESIZEDB = b"\xfb"
-    OP_CODE_EXPIRETIMEMS = b"\xfc"
-    OP_CODE_EXPIRETIME = b"\xfd"
-    OP_CODE_SELECTDB = b"\xfe"
-    OP_CODE_EOF = b"\xff"
+    OPCODE_AUX = b"\xfa"
+    OPCODE_RESIZEDB = b"\xfb"
+    OPCODE_EXPIRETIMEMS = b"\xfc"
+    OPCODE_EXPIRETIME = b"\xfd"
+    OPCODE_SELECTDB = b"\xfe"
+    OPCODE_EOF = b"\xff"
 
     LENGTH_ENCODING_MAPPING = {
         b"\x00": 6,
@@ -828,9 +830,9 @@ class RDBFileParser:
         Raises:
             Exception: If the metadata header is invalid.
         """
-        if data[self.METADATA_START_SLICE] != self.OP_CODE_AUX:
+        if data[self.METADATA_START_SLICE] != self.OPCODE_AUX:
             raise Exception(
-                f"Invalid metadata header. Expected {self.OP_CODE_AUX}. Received: {data[self.METADATA_START_SLICE]}"
+                f"Invalid metadata header. Expected {self.OPCODE_AUX}. Received: {data[self.METADATA_START_SLICE]}"
             )
 
         metadata_version_name_size_slice = slice(10, 11)
@@ -854,6 +856,46 @@ class RDBFileParser:
             data[metadata_version_val_slice],
         )
 
+    def _read_length(self, data, start_idx):
+        """
+        Reads a length-encoded integer from the data using Redis RDB file encoding.
+
+        This method implements the length encoding used in Redis RDB files:
+        1. If the first byte is less than 0xC0, it represents the length directly.
+        2. If the first byte is 0xC0, the next 2 bytes represent the length as a 16-bit integer.
+        3. If the first byte is 0xC1, the next 4 bytes represent the length as a 32-bit integer.
+        4. Other encodings (0xC2 and above) are not supported in this implementation.
+
+        Args:
+            data (bytes): The binary data of the RDB file.
+            start_idx (int): The starting index to read from in the data.
+
+        Returns:
+            Tuple[int, int]: A tuple containing:
+                - The decoded length (int)
+                - The new index after reading the length (int)
+
+        Raises:
+            Exception: If an unsupported length encoding is encountered.
+        """
+        first_byte = data[start_idx]
+        if first_byte < 0xC0:
+            # If the first byte is less than 0xC0, it directly represents the length
+            return first_byte, start_idx + 1
+        elif first_byte < 0xF0:
+            if first_byte == 0xC0:
+                # If the first byte is 0xC0, read the next 2 bytes as a 16-bit integer
+                return struct.unpack(">H", data[start_idx + 1 : start_idx + 3])[
+                    0
+                ], start_idx + 3
+            elif first_byte == 0xC1:
+                # If the first byte is 0xC1, read the next 4 bytes as a 32-bit integer
+                return struct.unpack(">I", data[start_idx + 1 : start_idx + 5])[
+                    0
+                ], start_idx + 5
+        # If we reach here, it means we've encountered an unsupported encoding
+        raise Exception(f"Unsupported length encoding: {first_byte}")
+
     def _verify_db_selector(self, data) -> int:
         """
         Extracts the database information from the RDB file data.
@@ -870,14 +912,14 @@ class RDBFileParser:
         Raises:
             Exception: If the SELECTDB or RESIZEDB opcodes are not found in the data.
         """
-        db_start_idx = data.find(self.OP_CODE_SELECTDB)
+        db_start_idx = data.find(self.OPCODE_SELECTDB)
         if db_start_idx == -1:
             raise Exception("Expected SELECTDB opcode not found in the RDB file.")
 
         hash_table_info_slice = slice(db_start_idx + 2, db_start_idx + 3)
-        if data[hash_table_info_slice] != self.OP_CODE_RESIZEDB:
+        if data[hash_table_info_slice] != self.OPCODE_RESIZEDB:
             raise Exception(
-                f"Expected RESIZEDB opcode not found in the RDB file. Expected {self.OP_CODE_RESIZEDB}. Received: {data[hash_table_info_slice]}"
+                f"Expected RESIZEDB opcode not found in the RDB file. Expected {self.OPCODE_RESIZEDB}. Received: {data[hash_table_info_slice]}"
             )
 
         hash_table_size, idx = self._read_length(data, db_start_idx + 3)
@@ -893,69 +935,82 @@ class RDBFileParser:
         Extracts key-value pairs from the RDB file data.
 
         This method reads the key-value pairs from the provided data starting at the given index.
-        It expects a specific format for the key-value pairs and raises an exception if the format is not met.
+        It handles different value types and expiry times.
 
         Args:
             data (bytes): The binary data of the RDB file.
             kv_start_idx (int): The starting index for reading key-value pairs.
 
         Returns:
-            List[Tuple[str, str]]: A list of tuples containing the key-value pairs.
+            List[Tuple[str, str, Optional[int]]]: A list of tuples containing the key-value pairs and optional expiry time.
 
         Raises:
-            Exception: If the expected flag for key-value pairs is not found.
+            Exception: If an unexpected value type is encountered.
         """
-        print(data)
+        print(f"[{self.role}] RDB data: {data}")
         kv_pairs = []
         idx = kv_start_idx
         while idx < len(data):
             if data[idx] == 0xFF:  # End of RDB file
                 break
-            if data[idx] != 0:  # Not a string encoding
-                raise Exception(f"Unexpected value type: {data[idx]}")
 
+            expiry = None
+            if data[idx] == 0xFD:  # EXPIRETIME_MS
+                idx += 1
+                expiry = struct.unpack(">Q", data[idx : idx + 8])[0]
+                idx += 8
+            elif data[idx] == 0xFC:  # EXPIRETIME
+                idx += 1
+                expiry = (
+                    struct.unpack(">I", data[idx : idx + 4])[0] * 1000
+                )  # Convert to milliseconds
+                idx += 4
+
+            value_type = data[idx]
             idx += 1
+
             key_size, idx = self._read_length(data, idx)
             key = data[idx : idx + key_size].decode("utf-8")
             idx += key_size
 
-            value_size, idx = self._read_length(data, idx)
-            value = data[idx : idx + value_size].decode("utf-8")
-            idx += value_size
+            if value_type == 0:  # String encoding
+                value_size, idx = self._read_length(data, idx)
+                value = data[idx : idx + value_size].decode("utf-8")
+                idx += value_size
+            elif value_type in range(1, 14):  # List encoding
+                # Implement list handling if needed
+                raise Exception("Encoding not implemented")
+            elif value_type == 0xC0:  # LZF compressed string
+                compressed_size, idx = self._read_length(data, idx)
+                uncompressed_size, idx = self._read_length(data, idx)
+                compressed_data = data[idx : idx + compressed_size]
+                idx += compressed_size
+                try:
+                    import lzf
 
-            print(f"[{self.role}] Key size: ", key_size)
-            print(f"[{self.role}] Key: ", key)
-            print(f"[{self.role}] Value size: ", value_size)
-            print(f"[{self.role}] Value: ", value)
+                    value = lzf.decompress(compressed_data, uncompressed_size).decode(
+                        "utf-8"
+                    )
+                except ImportError:
+                    raise Exception(
+                        "LZF compression support not available. Please install the 'python-lzf' package."
+                    )
+            elif value_type == 0xC7:  # Special value type for Redis 7.2+
+                value_size, idx = self._read_length(data, idx)
+                value = data[idx : idx + value_size].decode("utf-8")
+                idx += value_size
+            elif value_type == 0x7E:  # Handle value type 126 (0x7E)
+                value_size, idx = self._read_length(data, idx)
+                value = data[idx : idx + value_size].decode("utf-8")
+                idx += value_size
+            else:
+                raise Exception(f"Unexpected value type: {value_type}")
 
-            kv_pairs.append((key, value))
+            print(f"[{self.role}] Key: {key}, Value: {value}, Expiry: {expiry}")
+            if key:  # Only add non-empty keys
+                kv_pairs.append((key, value, expiry))
 
         return kv_pairs
-
-    def _read_length(self, data, start_idx):
-        """
-        Reads a length-encoded integer from the data.
-
-        Args:
-            data (bytes): The binary data.
-            start_idx (int): The starting index to read from.
-
-        Returns:
-            Tuple[int, int]: The decoded length and the new index after reading.
-        """
-        first_byte = data[start_idx]
-        if first_byte < 0xC0:
-            return first_byte, start_idx + 1
-        elif first_byte < 0xF0:
-            if first_byte == 0xC0:
-                return struct.unpack(">H", data[start_idx + 1 : start_idx + 3])[
-                    0
-                ], start_idx + 3
-            elif first_byte == 0xC1:
-                return struct.unpack(">I", data[start_idx + 1 : start_idx + 5])[
-                    0
-                ], start_idx + 5
-        raise Exception(f"Unsupported length encoding: {first_byte}")
 
     def parse(self):
         """
