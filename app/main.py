@@ -563,9 +563,9 @@ class Parser:
         key = cmd_list[PARAM_IDX]
         print(f"[{self.role}] TYPE command received. Key: {key}")
         if key in self.REDIS_DB:
-            if "-" in key:
-                return b"+stream\r\n"
             value = self.REDIS_DB[key]["value"]
+            if "-" in value:
+                return b"+stream\r\n"
             if isinstance(value, str):
                 return b"+string\r\n"
             else:
@@ -596,6 +596,7 @@ class Parser:
             print(
                 f"[{self.role}] XADD command received. Key: {stream_key} and ID: {stream_id}"
             )
+            self.REDIS_DB[stream_key] = {"value": stream_id}
             return f"${len(stream_id)}\r\n{stream_id}\r\n".encode("utf-8")
         else:
             raise Exception("Stream ID not provided for XADD command")
