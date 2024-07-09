@@ -62,7 +62,8 @@ class Parser:
         if restored_kv_pairs:
             print(f"[{self.role}] Restoring key-value pairs from RDB dump")
             for key, value in restored_kv_pairs:
-                self.REDIS_DB[key] = {"value": value}
+                if len(key) > 0:
+                    self.REDIS_DB[key] = {"value": value}
 
     def _extract_content(
         self, cmd_list: List[str], content_len_idx: int, content_idx: int
@@ -909,7 +910,11 @@ class RDBFileParser:
             print(f"[{self.role}] Value size: ", value_size)
             print(f"[{self.role}] Value: ", value)
 
-            kv_pairs.append((key.decode('utf-8'), value.decode('utf-8')))
+            try:
+                kv_pairs.append((key.decode('utf-8'), value.decode('utf-8')))
+            except Exception as e:
+                print(f"[{self.role}] Error decoding key-value pair: {e}. Storing value as bytes")
+                kv_pairs.append((key.decode('utf-8'), value))
             kv_start_idx = data_start_idx + 1 + value_size
         return kv_pairs
 
@@ -927,7 +932,7 @@ class RDBFileParser:
         if data:
             self._verify_header(data)
             self._verify_metadata(data)
-             kv_start_idx = self._verify_db_selector(data)
+            kv_start_idx = self._verify_db_selector(data)
             kv_pairs = self._extract_kv_pairs(data, kv_start_idx)
             return kv_pairs
 
