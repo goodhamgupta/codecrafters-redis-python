@@ -574,12 +574,44 @@ class Parser:
         else:
             return b"+none\r\n"
 
-    def _generate_stream_id_ms_time(self, candidate_ms_time, _stream_value):
+    def _generate_stream_id_ms_time(self, candidate_ms_time, stream_value):
+        """
+        Generate the millisecond time part of a stream ID.
+
+        Args:
+            candidate_ms_time (str): The candidate millisecond time, can be "*" for auto-generation.
+            stream_value (list): The current stream entries.
+
+        Returns:
+            int: The generated millisecond time.
+
+        This method handles the generation of the millisecond time part of a stream ID.
+        It takes into account the existing entries in the stream and the provided candidate time.
+
+        If candidate_ms_time is "*", it auto-generates a time based on the following rules:
+        1. If there are existing entries, it returns the time of the last entry.
+        2. If there are no existing entries, it returns the current time in milliseconds.
+
+        If candidate_ms_time is not "*", it returns the integer value of candidate_ms_time.
+        """
+        if len(stream_value) > 0:
+            last_stream = stream_value[-1]
+            ms_time, _ = map(int, last_stream["stream_id"].split("-"))
+        else:
+            ms_time = None
+
         if candidate_ms_time == "*":
-            raise Exception(
-                "Stream ID not provided for XADD command. Auto-increment not supported."
+            if ms_time is not None:
+                return ms_time
+            else:
+                return int(time.time() * SECONDS_TO_MS)
+
+        try:
+            return int(candidate_ms_time)
+        except ValueError:
+            raise ValueError(
+                f"Invalid candidate_ms_time: {candidate_ms_time}. Must be '*' or a valid integer."
             )
-        return int(candidate_ms_time)
 
     def _generate_stream_id_seq_num(
         self, generated_ms_time, candidate_seq_num, stream_value
@@ -588,15 +620,23 @@ class Parser:
         Generate the sequence number part of a stream ID.
 
         Args:
-            generated_ms_time (str): The millisecond time part of the stream ID.
+            generated_ms_time (int): The millisecond time part of the stream ID.
             candidate_seq_num (str): The candidate sequence number, can be "*" for auto-generation.
             stream_value (list): The current stream entries.
 
         Returns:
-            str: The generated sequence number.
+            int: The generated sequence number.
 
         This method handles the generation of the sequence number part of a stream ID.
         It takes into account the existing entries in the stream and the provided candidate sequence number.
+
+        If candidate_seq_num is "*", it auto-generates a sequence number based on the following rules:
+        1. If there are existing entries and the generated_ms_time matches the last entry's time,
+           it increments the last sequence number.
+        2. If generated_ms_time is 0, it returns 1.
+        3. Otherwise, it returns 0.
+
+        If candidate_seq_num is not "*", it returns the integer value of candidate_seq_num.
         """
         ms_time, seq_num = None, None
         if len(stream_value) > 0:
@@ -606,7 +646,7 @@ class Parser:
             print(f"[{self.role}] Auto-generating sequence number for XADD command")
             if seq_num is not None:
                 if generated_ms_time == ms_time:
-                    return int(f"{seq_num + 1}")
+                    return seq_num + 1
                 elif generated_ms_time == 0:
                     return 1
                 else:
@@ -635,6 +675,17 @@ class Parser:
 
         Raises:
             Exception: If the stream ID is not provided.
+
+        This method processes the XADD command, which adds a new entry to a Redis stream.
+        It performs the following steps:
+        1. Extracts the stream key and ID from the command list.
+        2. Validates the stream ID.
+        3. Generates a new stream ID if necessary.
+        4. Adds the new entry to the stream.
+        5. Returns the ID of the newly added entry.
+
+        The method also handles error cases, such as invalid stream IDs or
+        attempts to add entries with IDs smaller than or equal to existing entries.
         """
         (_stream_key_len, stream_key) = self._extract_content(
             cmd_list, PARAM_LEN_IDX, PARAM_IDX
@@ -647,7 +698,12 @@ class Parser:
             print(
                 f"[{self.role}] XADD command received. Key: {stream_key} and ID: {stream_id}"
             )
-            [candidate_ms_time, candidate_seq_num] = [x for x in stream_id.split("-")]
+            if stream_id == "*":
+                [candidate_ms_time, candidate_seq_num] = ["*", "*"]
+            else:
+                [candidate_ms_time, candidate_seq_num] = [
+                    x for x in stream_id.split("-")
+                ]
             if candidate_ms_time == "0" and candidate_seq_num == "0":
                 return b"-ERR The ID specified in XADD must be greater than 0-0\r\n"
             stream_value = self.STREAM_DB.get(stream_key, [])
