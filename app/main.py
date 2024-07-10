@@ -574,6 +574,55 @@ class Parser:
         else:
             return b"+none\r\n"
 
+    def _generate_stream_id_ms_time(self, candidate_ms_time, _stream_value):
+        if candidate_ms_time == "*":
+            raise Exception(
+                "Stream ID not provided for XADD command. Auto-increment not supported."
+            )
+        return int(candidate_ms_time)
+
+    def _generate_stream_id_seq_num(
+        self, generated_ms_time, candidate_seq_num, stream_value
+    ):
+        """
+        Generate the sequence number part of a stream ID.
+
+        Args:
+            generated_ms_time (str): The millisecond time part of the stream ID.
+            candidate_seq_num (str): The candidate sequence number, can be "*" for auto-generation.
+            stream_value (list): The current stream entries.
+
+        Returns:
+            str: The generated sequence number.
+
+        This method handles the generation of the sequence number part of a stream ID.
+        It takes into account the existing entries in the stream and the provided candidate sequence number.
+        """
+        ms_time, seq_num = None, None
+        if len(stream_value) > 0:
+            last_stream = stream_value[-1]
+            [ms_time, seq_num] = [int(x) for x in last_stream["stream_id"].split("-")]
+        if candidate_seq_num == "*":
+            print(f"[{self.role}] Auto-generating sequence number for XADD command")
+            if seq_num is not None:
+                if generated_ms_time == ms_time:
+                    return int(f"{seq_num + 1}")
+                elif generated_ms_time == 0:
+                    return 1
+                else:
+                    return 0
+            else:
+                print(
+                    f"[{self.role}] No existing sequence number. Received generated_ms_time: {generated_ms_time} "
+                )
+                if generated_ms_time == 0:
+                    print(f"[{self.role}] Returning 1 as sequence number")
+                    return 1
+                print(f"[{self.role}] Returning 0 as sequence number")
+                return 0
+        else:
+            return int(candidate_seq_num)
+
     def _handle_xadd(self, cmd_list) -> bytes:
         """
         Handles the XADD command for adding new entries to a stream.
@@ -593,27 +642,43 @@ class Parser:
         (_stream_id_len, stream_id) = self._extract_content(
             cmd_list, PARAM_ARG_LEN_IDX, PARAM_ARG_IDX
         )
+        print(f"[{self.role}] Current stream DB: {self.STREAM_DB}")
         if stream_id:
             print(
                 f"[{self.role}] XADD command received. Key: {stream_key} and ID: {stream_id}"
             )
-            value = self.STREAM_DB.get(stream_key, [])
-            if len(value) > 0:
+            [candidate_ms_time, candidate_seq_num] = [x for x in stream_id.split("-")]
+            if candidate_ms_time == "0" and candidate_seq_num == "0":
+                return b"-ERR The ID specified in XADD must be greater than 0-0\r\n"
+            stream_value = self.STREAM_DB.get(stream_key, [])
+            generated_ms_time = self._generate_stream_id_ms_time(
+                candidate_ms_time, stream_value
+            )
+            generated_seq_num = self._generate_stream_id_seq_num(
+                generated_ms_time, candidate_seq_num, stream_value
+            )
+            generated_stream_id = f"{generated_ms_time}-{generated_seq_num}"
+            print(f"[{self.role}] Generated stream ID: {generated_stream_id}")
+            if len(stream_value) > 0:
                 # Validate if current stream ID is greater than the last stream ID
-                last_stream = value[-1]
-                [ms_time, seq_num] = [int(x) for x in last_stream["stream_id"].split("-")]
-                [candidate_ms_time, candidate_seq_num] = [int(x) for x in stream_id.split("-")]
-                if candidate_ms_time == 0 and candidate_seq_num == 0:
-                    return b"-ERR The ID specified in XADD must be greater than 0-0\r\n"
-                if (candidate_ms_time == ms_time and candidate_seq_num > seq_num) or (candidate_seq_num > ms_time and candidate_ms_time > ms_time):
+                last_stream = stream_value[-1]
+                [ms_time, seq_num] = [
+                    int(x) for x in last_stream["stream_id"].split("-")
+                ]
+                if (generated_ms_time > ms_time) or (
+                    generated_ms_time == ms_time and generated_seq_num > seq_num
+                ):
                     print(f"[{self.role}] Stream ID is valid. Adding to stream.")
-                    value.append({"stream_id": stream_id})
+                    stream_value.append({"stream_id": generated_stream_id})
                 else:
                     return b"-ERR The ID specified in XADD is equal or smaller than the target stream top item\r\n"
             else:
-                value.append({"stream_id": stream_id})
-            self.STREAM_DB[stream_key] = value
-            return f"${len(stream_id)}\r\n{stream_id}\r\n".encode("utf-8")
+                stream_value.append({"stream_id": generated_stream_id})
+
+            self.STREAM_DB[stream_key] = stream_value
+            return f"${len(generated_stream_id)}\r\n{generated_stream_id}\r\n".encode(
+                "utf-8"
+            )
         else:
             raise Exception("Stream ID not provided for XADD command")
 
