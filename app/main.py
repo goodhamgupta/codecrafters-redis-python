@@ -107,6 +107,9 @@ class Parser:
         if len(cmd_list) > content_idx:
             param_len = int(cmd_list[content_len_idx][1:])
             param_content = cmd_list[content_idx]
+            print(
+                f"[{self.role}] Extracted content: {param_content} Extracted length: {param_len}"
+            )
             assert (
                 len(param_content) == param_len
             ), f"Expected parameter of length {param_len} but received {len(param_content)}"
@@ -171,6 +174,7 @@ class Parser:
                 "KEYS": self._handle_keys,
                 "TYPE": self._handle_type,
                 "XADD": self._handle_xadd,
+                "XRANGE": self._handle_xrange,
             }
             last_result = None
 
@@ -663,6 +667,42 @@ class Parser:
         else:
             return int(candidate_seq_num)
 
+    def _extract_stream_params(self, cmd_list: List[str]) -> dict:
+        """
+        Extracts the stream parameters from the command list.
+
+        Args:
+            cmd_list (List[str]): The list of command arguments.
+
+        Returns:
+            dict: A dictionary containing the extracted stream parameters.
+        """
+        parameter_dict = {}
+        cur_param_len_idx = EXTRA_ARGS_CMD_LEN_IDX
+        cur_param_len_content_idx = EXTRA_ARGS_CMD_IDX
+        cur_param_val_idx = EXTRA_ARGS_CONTENT_LEN_IDX
+        cur_param_val_content_idx = EXTRA_ARGS_CONTENT_IDX
+        while True:
+            try:
+                (_param_len, param_name) = self._extract_content(
+                    cmd_list, cur_param_len_idx, cur_param_len_content_idx
+                )
+                (_param_len, param_val) = self._extract_content(
+                    cmd_list, cur_param_val_idx, cur_param_val_content_idx
+                )
+                if param_name and param_val:
+                    parameter_dict[param_name] = param_val
+                    cur_param_len_idx += 4
+                    cur_param_len_content_idx += 4
+                    cur_param_val_idx += 4
+                    cur_param_val_content_idx += 4
+                else:
+                    break
+            except IndexError:
+                break
+
+        return parameter_dict
+
     def _handle_xadd(self, cmd_list) -> bytes:
         """
         Handles the XADD command for adding new entries to a stream.
@@ -693,6 +733,7 @@ class Parser:
         (_stream_id_len, stream_id) = self._extract_content(
             cmd_list, PARAM_ARG_LEN_IDX, PARAM_ARG_IDX
         )
+        parameter_dict = self._extract_stream_params(cmd_list)
         print(f"[{self.role}] Current stream DB: {self.STREAM_DB}")
         if stream_id:
             print(
@@ -731,12 +772,89 @@ class Parser:
             else:
                 stream_value.append({"stream_id": generated_stream_id})
 
+            if parameter_dict:
+                stream_value[-1]["fields"] = parameter_dict
+
+            print(f"[{self.role}] Updated stream value: {stream_value}")
             self.STREAM_DB[stream_key] = stream_value
             return f"${len(generated_stream_id)}\r\n{generated_stream_id}\r\n".encode(
                 "utf-8"
             )
         else:
             raise Exception("Stream ID not provided for XADD command")
+
+    def _handle_xrange(self, cmd_list: List[str]) -> bytes:
+        """
+        Handles the XRANGE command for retrieving entries from a stream within a specified range.
+
+        Args:
+            cmd_list (List[str]): The list of command arguments.
+
+        Returns:
+            bytes: The response containing the stream entries within the specified range.
+                   Returns an error response if key, start, or end are not provided.
+        """
+        (_len, key) = self._extract_content(cmd_list, PARAM_LEN_IDX, PARAM_IDX)
+        (_len, start) = self._extract_content(
+            cmd_list, PARAM_ARG_LEN_IDX, PARAM_ARG_IDX
+        )
+        (_len, end) = self._extract_content(
+            cmd_list, EXTRA_ARGS_CMD_LEN_IDX, EXTRA_ARGS_CMD_IDX
+        )
+        if key and start and end:
+            if start == "-":
+                [start_ms_time, start_seq_num] = [0, 0]
+            elif len(start) > 1 and "-" not in start:
+                [start_ms_time, start_seq_num] = [int(start), 0]
+            else:
+                [start_ms_time, start_seq_num] = [int(x) for x in start.split("-")]
+
+            if end == "+":
+                [end_ms_time, end_seq_num] = [float("inf"), float("inf")]
+            elif len(end) > 1 and "-" not in end:
+                [end_ms_time, end_seq_num] = [int(end), float("inf")]
+            else:
+                [end_ms_time, end_seq_num] = [int(x) for x in end.split("-")]
+
+            stream_value = self.STREAM_DB.get(key, [])
+            valid_values = []
+            for stream in stream_value:
+                stream_id = stream["stream_id"]
+                [ms_time, seq_num] = [int(x) for x in stream_id.split("-")]
+                if (
+                    ms_time > start_ms_time
+                    or (ms_time == start_ms_time and seq_num >= start_seq_num)
+                ) and (
+                    ms_time < end_ms_time
+                    or (ms_time == end_ms_time and seq_num <= end_seq_num)
+                ):
+                    valid_values.append(stream)
+            # Encode all dictionaries in valid_values as a RESP array string
+            return self._encode_resp_array(valid_values)
+        else:
+            return b"-ERR Key, start, or end not provided for XRANGE command\r\n"
+
+    def _encode_resp_array(self, array: List[dict]) -> bytes:
+        """
+        Encodes a list of dictionaries into a RESP array string.
+
+        Args:
+            array (List[dict]): The list of dictionaries to encode.
+
+        Returns:
+            bytes: The RESP-encoded array string.
+        """
+        print(f"[{self.role}] Encoding RESP array: {array}")
+        resp_array = f"*{len(array)}\r\n"
+        for item in array:
+            stream_id = item["stream_id"]
+            fields = item.get("fields", {})
+            resp_array += (
+                f"*2\r\n${len(stream_id)}\r\n{stream_id}\r\n*{len(fields)*2}\r\n"
+            )
+            for key, value in fields.items():
+                resp_array += f"${len(key)}\r\n{key}\r\n${len(value)}\r\n{value}\r\n"
+        return resp_array.encode("utf-8")
 
 
 def process_request(client_socket, _client_addr, args, restored_kv_pairs):
