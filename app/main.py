@@ -832,7 +832,6 @@ class Parser:
                     or (ms_time == end_ms_time and seq_num <= end_seq_num)
                 ):
                     valid_values.append(stream)
-            # Encode all dictionaries in valid_values as a RESP array string
             return self._encode_resp_array({key: valid_values}, encode_stream_id=False)
         else:
             return b"-ERR Key, start, or end not provided for XRANGE command\r\n"
@@ -927,27 +926,27 @@ class Parser:
               responses to commands like XREAD that may return multiple streams.
             - When encode_stream_id is False, the output only includes stream entries, suitable for
               responses to commands like XRANGE that operate on a single stream.
-
-        Example:
-            Input: {
-                "mystream": [
-                    {"stream_id": "1234567-0", "fields": {"name": "Alice", "age": "30"}},
-                    {"stream_id": "1234568-0", "fields": {"name": "Bob", "age": "25"}}
-                ]
-            }
-            Output (encode_stream_id=True):
-                b'*1\r\n*2\r\n$8\r\nmystream\r\n*2\r\n*2\r\n$10\r\n1234567-0\r\n*4\r\n$4\r\nname\r\n$5\r\nAlice\r\n$3\r\nage\r\n$2\r\n30\r\n*2\r\n$10\r\n1234568-0\r\n*4\r\n$4\r\nname\r\n$3\r\nBob\r\n$3\r\nage\r\n$2\r\n25\r\n'
-
-            Output (encode_stream_id=False):
-                b'*2\r\n*2\r\n$10\r\n1234567-0\r\n*4\r\n$4\r\nname\r\n$5\r\nAlice\r\n$3\r\nage\r\n$2\r\n30\r\n*2\r\n$10\r\n1234568-0\r\n*4\r\n$4\r\nname\r\n$3\r\nBob\r\n$3\r\nage\r\n$2\r\n25\r\n'
         """
         print(
             f"[{self.role}] Encoding RESP array: {array}. Include stream ID: {encode_stream_id}"
         )
-        resp_array = f"*{len(array)}\r\n"
-        for stream_key, stream_data in array.items():
-            if encode_stream_id:
+        if encode_stream_id:
+            resp_array = f"*{len(array)}\r\n"
+            for stream_key, stream_data in array.items():
                 resp_array += f"*2\r\n${len(stream_key)}\r\n{stream_key}\r\n*{len(stream_data)}\r\n"
+                for item in stream_data:
+                    stream_id = item["stream_id"]
+                    fields = item.get("fields", {})
+                    resp_array += f"*2\r\n${len(stream_id)}\r\n{stream_id}\r\n*{len(fields)*2}\r\n"
+                    for key, value in fields.items():
+                        resp_array += (
+                            f"${len(key)}\r\n{key}\r\n${len(str(value))}\r\n{value}\r\n"
+                        )
+        else:
+            stream_data = next(
+                iter(array.values())
+            )  # Get the first (and only) stream's data
+            resp_array = f"*{len(stream_data)}\r\n"
             for item in stream_data:
                 stream_id = item["stream_id"]
                 fields = item.get("fields", {})
@@ -958,6 +957,7 @@ class Parser:
                     resp_array += (
                         f"${len(key)}\r\n{key}\r\n${len(str(value))}\r\n{value}\r\n"
                     )
+
         return resp_array.encode("utf-8")
 
 
