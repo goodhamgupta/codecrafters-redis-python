@@ -6,6 +6,8 @@ import argparse
 from argparse import Namespace
 from pathlib import Path
 import struct
+from collections import OrderedDict
+from uu import encode
 
 
 MAX_BYTES_TO_RECEIVE = 1024
@@ -831,7 +833,7 @@ class Parser:
                 ):
                     valid_values.append(stream)
             # Encode all dictionaries in valid_values as a RESP array string
-            return self._encode_resp_array(valid_values)
+            return self._encode_resp_array({key: valid_values}, encode_stream_id=False)
         else:
             return b"-ERR Key, start, or end not provided for XRANGE command\r\n"
 
@@ -858,66 +860,95 @@ class Parser:
         (_len, qtype) = self._extract_content(cmd_list, PARAM_LEN_IDX, PARAM_IDX)
         if qtype and qtype.strip().upper() != "STREAMS":
             return b"-ERR Only STREAMS is supported for XREAD command\r\n"
-        (_len, stream_key) = self._extract_content(
-            cmd_list, PARAM_ARG_LEN_IDX, PARAM_ARG_IDX
-        )
-        (_len, stream_id) = self._extract_content(
-            cmd_list, EXTRA_ARGS_CMD_LEN_IDX, EXTRA_ARGS_CMD_IDX
-        )
-        print(
-            f"[{self.role}] XREAD command received. Key: {stream_key}, stream_id: {stream_id}"
-        )
-        if not stream_key or not stream_id:
-            return b"-ERR Key or stream_id not provided for XREAD command\r\n"
-        if stream_key not in self.STREAM_DB:
-            return b"-ERR Stream not found\r\n"
-        stream_value_list = self.STREAM_DB[stream_key]
-        [ms_time, seq_num] = stream_id.split("-")
-        filtered_values = []
-        for candidate_stream_value in stream_value_list:
-            [candidate_sid_ms, candidate_sid_seq_num] = candidate_stream_value[
-                "stream_id"
-            ].split("-")
-            if int(candidate_sid_ms) > int(ms_time) or (
-                int(candidate_sid_ms) == int(ms_time)
-                and int(candidate_sid_seq_num) > int(seq_num)
-            ):
-                filtered_values.append(candidate_stream_value)
+        sid_seq_num_mapping = OrderedDict()
+        final_sid_seq_mapping = {}
+        candidate_content_len_idx = PARAM_ARG_LEN_IDX
+        candidate_content_idx = PARAM_ARG_IDX
+        while True:
+            (_len, candidate_content) = self._extract_content(
+                cmd_list, candidate_content_len_idx, candidate_content_idx
+            )
+            if not candidate_content:
+                break
+            if "-" in candidate_content:
+                print(
+                    f"[{self.role}] Extracted content: {candidate_content} is stream ID"
+                )
+                (candidate_stream_key, _) = sid_seq_num_mapping.popitem(last=False)
+                final_sid_seq_mapping[candidate_stream_key] = candidate_content
+            else:
+                print(
+                    f"[{self.role}] Extracted content: {candidate_content} is stream key"
+                )
+                sid_seq_num_mapping[candidate_content] = None
+            candidate_content_len_idx += 2
+            candidate_content_idx += 2
 
-        return self._encode_resp_array(filtered_values, stream_key)
+        filtered_values_mapping = {}
+        for stream_key, stream_id in final_sid_seq_mapping.items():
+            if stream_key not in self.STREAM_DB:
+                return b"-ERR Stream not found\r\n"
+            stream_value_list = self.STREAM_DB[stream_key]
+            [ms_time, seq_num] = stream_id.split("-")
+            filtered_values = []
+            for candidate_stream_value in stream_value_list:
+                [candidate_sid_ms, candidate_sid_seq_num] = candidate_stream_value[
+                    "stream_id"
+                ].split("-")
+                if int(candidate_sid_ms) > int(ms_time) or (
+                    int(candidate_sid_ms) == int(ms_time)
+                    and int(candidate_sid_seq_num) > int(seq_num)
+                ):
+                    filtered_values.append(candidate_stream_value)
+            filtered_values_mapping[stream_key] = filtered_values
 
-    def _encode_resp_array(self, array: List[dict], stream_key=None) -> bytes:
+        return self._encode_resp_array(filtered_values_mapping, encode_stream_id=True)
+
+    def _encode_resp_array(self, array: dict, encode_stream_id=False) -> bytes:
         """
-        Encodes a list of dictionaries into a RESP array string.
+        Encodes a dictionary of stream keys and their associated values into a RESP array string.
+
+        This method supports encoding both single and multiple stream entries. The structure of the
+        encoded RESP array depends on whether a single stream or multiple streams are being encoded.
 
         Args:
-            array (List[dict]): The list of dictionaries to encode.
-            stream_key (str, optional): The key of the stream.
+            array (dict): A dictionary where keys are stream names and values are lists of stream entries.
+                Each stream entry is expected to be a dictionary containing 'stream_id' and 'fields'.
+            encode_stream_id (bool, optional): If True, includes the stream key in the encoded output.
+                Defaults to False.
 
         Returns:
             bytes: The RESP-encoded array string.
+
+        Note:
+            - The method assumes that each stream entry in the input dictionary has a 'stream_id' key
+              and a 'fields' key containing key-value pairs of the stream entry.
+            - When encode_stream_id is True, the output includes the stream key, suitable for
+              responses to commands like XREAD that may return multiple streams.
+            - When encode_stream_id is False, the output only includes stream entries, suitable for
+              responses to commands like XRANGE that operate on a single stream.
+
+        Example:
+            Input: {
+                "mystream": [
+                    {"stream_id": "1234567-0", "fields": {"name": "Alice", "age": "30"}},
+                    {"stream_id": "1234568-0", "fields": {"name": "Bob", "age": "25"}}
+                ]
+            }
+            Output (encode_stream_id=True):
+                b'*1\r\n*2\r\n$8\r\nmystream\r\n*2\r\n*2\r\n$10\r\n1234567-0\r\n*4\r\n$4\r\nname\r\n$5\r\nAlice\r\n$3\r\nage\r\n$2\r\n30\r\n*2\r\n$10\r\n1234568-0\r\n*4\r\n$4\r\nname\r\n$3\r\nBob\r\n$3\r\nage\r\n$2\r\n25\r\n'
+
+            Output (encode_stream_id=False):
+                b'*2\r\n*2\r\n$10\r\n1234567-0\r\n*4\r\n$4\r\nname\r\n$5\r\nAlice\r\n$3\r\nage\r\n$2\r\n30\r\n*2\r\n$10\r\n1234568-0\r\n*4\r\n$4\r\nname\r\n$3\r\nBob\r\n$3\r\nage\r\n$2\r\n25\r\n'
         """
-        print(f"[{self.role}] Encoding RESP array: {array}")
-        if stream_key:
-            resp_array = (
-                f"*1\r\n*2\r\n${len(stream_key)}\r\n{stream_key}\r\n*{len(array)}\r\n"
-            )
-            for item in array:
-                stream_id = item["stream_id"]
-                fields = item.get("fields", {})
-                print(
-                    f"[{self.role}] Encoding stream_id: {stream_id} and fields: {fields}"
-                )
-                resp_array += (
-                    f"*2\r\n${len(stream_id)}\r\n{stream_id}\r\n*{len(fields)*2}\r\n"
-                )
-                for key, value in fields.items():
-                    resp_array += (
-                        f"${len(key)}\r\n{key}\r\n${len(str(value))}\r\n{value}\r\n"
-                    )
-        else:
-            resp_array = f"*{len(array)}\r\n"
-            for item in array:
+        print(
+            f"[{self.role}] Encoding RESP array: {array}. Include stream ID: {encode_stream_id}"
+        )
+        resp_array = f"*{len(array)}\r\n"
+        for stream_key, stream_data in array.items():
+            if encode_stream_id:
+                resp_array += f"*2\r\n${len(stream_key)}\r\n{stream_key}\r\n*{len(stream_data)}\r\n"
+            for item in stream_data:
                 stream_id = item["stream_id"]
                 fields = item.get("fields", {})
                 resp_array += (
