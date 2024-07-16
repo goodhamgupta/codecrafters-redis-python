@@ -44,7 +44,7 @@ class Parser:
         cmd_list: List[str],
         cmd_bytes: bytes,
         args: Namespace,
-        restored_kv_pairs: List[Tuple],
+        restored_kv_pairs: List[Tuple] = [],
     ):
         """
         Initializes the Parser instance.
@@ -175,6 +175,7 @@ class Parser:
                 "TYPE": self._handle_type,
                 "XADD": self._handle_xadd,
                 "XRANGE": self._handle_xrange,
+                "XREAD": self._handle_xread,
             }
             last_result = None
 
@@ -834,26 +835,98 @@ class Parser:
         else:
             return b"-ERR Key, start, or end not provided for XRANGE command\r\n"
 
-    def _encode_resp_array(self, array: List[dict]) -> bytes:
+    def _handle_xread(self, cmd_list: List[str]) -> bytes:
+        """
+        Handles the XREAD command for reading entries from a single stream.
+
+        Args:
+            cmd_list (List[str]): The list of command arguments.
+                Expected format: [XREAD, STREAMS, key, ID]
+                where:
+                - key is the stream key
+                - ID is the stream entry ID to start reading from
+
+        Returns:
+            bytes: The response containing the stream entries from the specified stream.
+                   Returns an error response if the command format is incorrect,
+                   if the key or ID is not provided, or if the stream is not found.
+
+        Note:
+            This implementation currently supports reading from a single stream only.
+            The 'STREAMS' keyword is required but only one key-ID pair is processed.
+        """
+        (_len, qtype) = self._extract_content(cmd_list, PARAM_LEN_IDX, PARAM_IDX)
+        if qtype and qtype.strip().upper() != "STREAMS":
+            return b"-ERR Only STREAMS is supported for XREAD command\r\n"
+        (_len, stream_key) = self._extract_content(
+            cmd_list, PARAM_ARG_LEN_IDX, PARAM_ARG_IDX
+        )
+        (_len, stream_id) = self._extract_content(
+            cmd_list, EXTRA_ARGS_CMD_LEN_IDX, EXTRA_ARGS_CMD_IDX
+        )
+        print(
+            f"[{self.role}] XREAD command received. Key: {stream_key}, stream_id: {stream_id}"
+        )
+        if not stream_key or not stream_id:
+            return b"-ERR Key or stream_id not provided for XREAD command\r\n"
+        if stream_key not in self.STREAM_DB:
+            return b"-ERR Stream not found\r\n"
+        stream_value_list = self.STREAM_DB[stream_key]
+        [ms_time, seq_num] = stream_id.split("-")
+        filtered_values = []
+        for candidate_stream_value in stream_value_list:
+            [candidate_sid_ms, candidate_sid_seq_num] = candidate_stream_value[
+                "stream_id"
+            ].split("-")
+            if int(candidate_sid_ms) > int(ms_time) or (
+                int(candidate_sid_ms) == int(ms_time)
+                and int(candidate_sid_seq_num) > int(seq_num)
+            ):
+                filtered_values.append(candidate_stream_value)
+
+        return self._encode_resp_array(filtered_values, stream_key)
+
+    def _encode_resp_array(self, array: List[dict], stream_key=None) -> bytes:
         """
         Encodes a list of dictionaries into a RESP array string.
 
         Args:
             array (List[dict]): The list of dictionaries to encode.
+            stream_key (str, optional): The key of the stream.
 
         Returns:
             bytes: The RESP-encoded array string.
         """
         print(f"[{self.role}] Encoding RESP array: {array}")
-        resp_array = f"*{len(array)}\r\n"
-        for item in array:
-            stream_id = item["stream_id"]
-            fields = item.get("fields", {})
-            resp_array += (
-                f"*2\r\n${len(stream_id)}\r\n{stream_id}\r\n*{len(fields)*2}\r\n"
+        if stream_key:
+            resp_array = (
+                f"*1\r\n*2\r\n${len(stream_key)}\r\n{stream_key}\r\n*{len(array)}\r\n"
             )
-            for key, value in fields.items():
-                resp_array += f"${len(key)}\r\n{key}\r\n${len(value)}\r\n{value}\r\n"
+            for item in array:
+                stream_id = item["stream_id"]
+                fields = item.get("fields", {})
+                print(
+                    f"[{self.role}] Encoding stream_id: {stream_id} and fields: {fields}"
+                )
+                resp_array += (
+                    f"*2\r\n${len(stream_id)}\r\n{stream_id}\r\n*{len(fields)*2}\r\n"
+                )
+                for key, value in fields.items():
+                    resp_array += (
+                        f"${len(key)}\r\n{key}\r\n${len(str(value))}\r\n{value}\r\n"
+                    )
+        else:
+            resp_array = f"*{len(array)}\r\n"
+            for item in array:
+                stream_id = item["stream_id"]
+                fields = item.get("fields", {})
+                resp_array += (
+                    f"*2\r\n${len(stream_id)}\r\n{stream_id}\r\n*{len(fields)*2}\r\n"
+                )
+                for key, value in fields.items():
+                    resp_array += (
+                        f"${len(key)}\r\n{key}\r\n${len(str(value))}\r\n{value}\r\n"
+                    )
         return resp_array.encode("utf-8")
 
 
