@@ -1,5 +1,6 @@
+import re
 import socket
-from threading import Thread
+from threading import Thread, Lock
 from typing import Tuple, Optional, List
 import time
 import argparse
@@ -7,7 +8,6 @@ from argparse import Namespace
 from pathlib import Path
 import struct
 from collections import OrderedDict
-from uu import encode
 
 
 MAX_BYTES_TO_RECEIVE = 1024
@@ -26,6 +26,10 @@ EXTRA_ARGS_CONTENT_LEN_IDX = 8
 EXTRA_ARGS_CONTENT_IDX = 9
 SECONDS_TO_MS = 1_000
 NUM_BYTES_RECEIVED_SO_FAR = 0
+global STREAM_DB
+STREAM_DB = {}
+global STREAM_DB_LOCK
+STREAM_DB_LOCK = Lock()
 
 
 class Parser:
@@ -576,7 +580,7 @@ class Parser:
                 return b"+string\r\n"
             else:
                 raise Exception(f"Unsupported value type: {type(value)}")
-        elif key in self.STREAM_DB:
+        elif key in STREAM_DB:
             return b"+stream\r\n"
         else:
             return b"+none\r\n"
@@ -737,7 +741,7 @@ class Parser:
             cmd_list, PARAM_ARG_LEN_IDX, PARAM_ARG_IDX
         )
         parameter_dict = self._extract_stream_params(cmd_list)
-        print(f"[{self.role}] Current stream DB: {self.STREAM_DB}")
+        print(f"[{self.role}] Current stream DB: {STREAM_DB}")
         if stream_id:
             print(
                 f"[{self.role}] XADD command received. Key: {stream_key} and ID: {stream_id}"
@@ -750,7 +754,7 @@ class Parser:
                 ]
             if candidate_ms_time == "0" and candidate_seq_num == "0":
                 return b"-ERR The ID specified in XADD must be greater than 0-0\r\n"
-            stream_value = self.STREAM_DB.get(stream_key, [])
+            stream_value = STREAM_DB.get(stream_key, [])
             generated_ms_time = self._generate_stream_id_ms_time(
                 candidate_ms_time, stream_value
             )
@@ -779,7 +783,7 @@ class Parser:
                 stream_value[-1]["fields"] = parameter_dict
 
             print(f"[{self.role}] Updated stream value: {stream_value}")
-            self.STREAM_DB[stream_key] = stream_value
+            STREAM_DB[stream_key] = stream_value
             return f"${len(generated_stream_id)}\r\n{generated_stream_id}\r\n".encode(
                 "utf-8"
             )
@@ -819,7 +823,7 @@ class Parser:
             else:
                 [end_ms_time, end_seq_num] = [int(x) for x in end.split("-")]
 
-            stream_value = self.STREAM_DB.get(key, [])
+            stream_value = STREAM_DB.get(key, [])
             valid_values = []
             for stream in stream_value:
                 stream_id = stream["stream_id"]
@@ -857,12 +861,32 @@ class Parser:
             The 'STREAMS' keyword is required but only one key-ID pair is processed.
         """
         (_len, qtype) = self._extract_content(cmd_list, PARAM_LEN_IDX, PARAM_IDX)
-        if qtype and qtype.strip().upper() != "STREAMS":
-            return b"-ERR Only STREAMS is supported for XREAD command\r\n"
+        is_block_command = False
+
+        if qtype:
+            if qtype.strip().upper() == "BLOCK":
+                is_block_command = True
+                print(
+                    f"[{self.role}] BLOCK command received. Waiting before processing.."
+                )
+                (_len, timeout) = self._extract_content(
+                    cmd_list, PARAM_ARG_LEN_IDX, PARAM_ARG_IDX
+                )
+                if timeout is not None:
+                    print("Timeout: ", timeout)
+                    time.sleep(int(timeout) / SECONDS_TO_MS)
+                print(f"[{self.role}] Waited for {timeout} ms. Continuing..")
+            elif qtype.strip().upper() != "STREAMS":
+                return b"-ERR Only STREAMS and BLOCK is supported for XREAD command\r\n"
+        else:
+            return b"-ERR STREAMS not provided for XREAD command\r\n"
+
         sid_seq_num_mapping = OrderedDict()
         final_sid_seq_mapping = {}
-        candidate_content_len_idx = PARAM_ARG_LEN_IDX
-        candidate_content_idx = PARAM_ARG_IDX
+        candidate_content_len_idx = (
+            PARAM_ARG_LEN_IDX + 4 if is_block_command else PARAM_ARG_LEN_IDX
+        )
+        candidate_content_idx = PARAM_ARG_IDX + 4 if is_block_command else PARAM_ARG_IDX
         while True:
             (_len, candidate_content) = self._extract_content(
                 cmd_list, candidate_content_len_idx, candidate_content_idx
@@ -884,23 +908,28 @@ class Parser:
             candidate_content_idx += 2
 
         filtered_values_mapping = {}
-        for stream_key, stream_id in final_sid_seq_mapping.items():
-            if stream_key not in self.STREAM_DB:
-                return b"-ERR Stream not found\r\n"
-            stream_value_list = self.STREAM_DB[stream_key]
-            [ms_time, seq_num] = stream_id.split("-")
-            filtered_values = []
-            for candidate_stream_value in stream_value_list:
-                [candidate_sid_ms, candidate_sid_seq_num] = candidate_stream_value[
-                    "stream_id"
-                ].split("-")
-                if int(candidate_sid_ms) > int(ms_time) or (
-                    int(candidate_sid_ms) == int(ms_time)
-                    and int(candidate_sid_seq_num) > int(seq_num)
-                ):
-                    filtered_values.append(candidate_stream_value)
-            filtered_values_mapping[stream_key] = filtered_values
+        with STREAM_DB_LOCK:
+            for stream_key, stream_id in final_sid_seq_mapping.items():
+                if stream_key not in STREAM_DB:
+                    return b"-ERR Stream not found\r\n"
+                stream_value_list = STREAM_DB[stream_key]
+                [ms_time, seq_num] = stream_id.split("-")
+                filtered_values = []
+                for candidate_stream_value in stream_value_list:
+                    [candidate_sid_ms, candidate_sid_seq_num] = candidate_stream_value[
+                        "stream_id"
+                    ].split("-")
+                    if int(candidate_sid_ms) > int(ms_time) or (
+                        int(candidate_sid_ms) == int(ms_time)
+                        and int(candidate_sid_seq_num) > int(seq_num)
+                    ):
+                        filtered_values.append(candidate_stream_value)
+                if len(filtered_values) > 0:
+                    filtered_values_mapping[stream_key] = filtered_values
 
+        if len(filtered_values_mapping) == 0:
+            # return null string
+            return b"$-1\r\n"
         return self._encode_resp_array(filtered_values_mapping, encode_stream_id=True)
 
     def _encode_resp_array(self, array: dict, encode_stream_id=False) -> bytes:
